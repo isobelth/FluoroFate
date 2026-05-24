@@ -43,7 +43,8 @@ from measurement import compute_cell_positivity, compute_per_cell_intensity_area
 from segmentation import cellpose_live_segmentation, segment_fluorescence
 from tracking import generate_trackmate_labels
 from fate_assignment import (assign_persistent_fates, assign_snapshot_fates,
-                             compute_persistent_percentages, compute_snapshot_percentages)
+                             compute_persistent_percentages, compute_snapshot_percentages,
+                             filter_by_frame_presence, filter_persistent_by_frame_presence)
 from plotting import (plot_persistent_percentages, plot_snapshot_percentages,
                       plot_snapshot_trajectories, plot_snapshot_cell_timelines)
 
@@ -54,6 +55,9 @@ LOGGER = logging.getLogger("fluorofate")
 CELLPOSE_DEFAULT_DIAMETER = None
 CELLPOSE_DEFAULT_FLOW_THRESHOLD = 0.4
 CELLPOSE_DEFAULT_CELLPROB_THRESHOLD = 0.0
+TRACKMATE_DEFAULT_SPLITTING_MAX_DISTANCE = 15.0
+TRACKMATE_ALLOW_MERGING = False
+FLUORESCENCE_DEFAULT_BLUR_SIGMA = 1.0
 THRESHOLD_CHOICES = ["mean", "minimum", "yen", "otsu", "triangle"]
 MODEL_CHOICES = ["cpsam", "cyto3", "cyto2", "cyto", "nuclei"]
 
@@ -67,6 +71,9 @@ OUTPUT_PCT_PERSISTENT_PDF = "percentages_persistent.pdf"
 OUTPUT_PCT_SNAPSHOT_PDF = "percentages_snapshot.pdf"
 OUTPUT_SNAPSHOT_TRAJECTORIES = "snapshot_trajectories.pdf"
 OUTPUT_SNAPSHOT_TIMELINES = "snapshot_timelines.pdf"
+# Filtered variants: cells appearing in >= N % of frames. Same plot panels as the
+# 'all cells' versions above; only the underlying set of cells differs.
+FRAME_PRESENCE_THRESHOLDS_PCT = (40, 60, 80)
 OUTPUT_RUN_CONFIG = "run_config.json"
 OUTPUT_RUN_LOG = "run.log"
 OUTPUT_README = "outputs_README.md"
@@ -77,10 +84,14 @@ OUTPUT_DESCRIPTIONS: Dict[str, str] = {
     OUTPUT_LINKED: "TrackMate-linked labels (cell ID stable across frames).",
     OUTPUT_TRACKS: "TrackMate spot-level output (intermediate; required for staged Tracking \u2192 Analysis runs).",
     OUTPUT_PER_FRAME_CELLS: "Per-cell, per-frame analysis output: cell area, raw fluorescence sums, thresholded positive areas, persistent fate flags, snapshot positivity flags, and lineage columns.",
-    OUTPUT_PCT_PERSISTENT_PDF: "Cumulative % positive over time (persistent mode).",
-    OUTPUT_PCT_SNAPSHOT_PDF: "Per-frame category % (snapshot mode).",
-    OUTPUT_SNAPSHOT_TRAJECTORIES: "XY trajectories coloured by snapshot category.",
-    OUTPUT_SNAPSHOT_TIMELINES: "Per-cell horizontal-bar timeline coloured by category.",
+    OUTPUT_PCT_PERSISTENT_PDF: "Cumulative % positive over time (persistent mode, all cells).",
+    OUTPUT_PCT_SNAPSHOT_PDF: "Per-frame category % (snapshot mode, all cells).",
+    OUTPUT_SNAPSHOT_TRAJECTORIES: "XY trajectories coloured by snapshot category (all cells).",
+    OUTPUT_SNAPSHOT_TIMELINES: "Per-cell horizontal-bar timeline coloured by category (all cells).",
+    **{f"percentages_persistent_min{p}pct.pdf": f"Persistent-mode cumulative % positive — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
+    **{f"percentages_snapshot_min{p}pct.pdf": f"Snapshot-mode per-frame % — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
+    **{f"snapshot_trajectories_min{p}pct.pdf": f"Snapshot XY trajectories — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
+    **{f"snapshot_timelines_min{p}pct.pdf": f"Snapshot per-cell timelines — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     OUTPUT_RUN_CONFIG: "All parameters used for this run (full provenance).",
     OUTPUT_RUN_LOG: "Full log for this run.",
     OUTPUT_README: "This file: description of every output.",
@@ -143,9 +154,7 @@ class FluoroFateApp:
     def params_signature_template(cellpose_model: str = "cpsam", custom_model_file: Path = Path(),
                                   min_cell_size: int = 15, use_gpu: bool = True,
                                   initial_search_radius: float = 30.0, search_radius: float = 150.0,
-                                  max_frame_gap: int = 2, allow_splitting: bool = True,
-                                  splitting_max_distance: float = 15.0, allow_merging: bool = False,
-                                  blur_sigma: float = 1.0):
+                                  max_frame_gap: int = 2, allow_splitting: bool = True):
         pass
 
     def __init__(self):
@@ -159,6 +168,9 @@ class FluoroFateApp:
         self.workdir_file_handler: Optional[logging.FileHandler] = None
         self.results: List[dict] = []
         self.last_refreshed_tiff_path: Optional[Path] = None
+        self.last_work_dir: Optional[Path] = None
+        self.last_tiff_path: Optional[Path] = None
+        self._channels_initialised: bool = False
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -204,9 +216,6 @@ class FluoroFateApp:
             search_radius={"label": "TM search radius", "min": 1.0, "max": 2000.0, "step": 5.0},
             max_frame_gap={"label": "TM max frame gap", "min": 0, "max": 50},
             allow_splitting={"label": "TM allow splitting"},
-            splitting_max_distance={"label": "TM splitting max distance", "min": 1.0, "max": 2000.0, "step": 5.0},
-            allow_merging={"label": "TM allow merging"},
-            blur_sigma={"label": "Fluor. blur sigma", "min": 0.1, "max": 20.0, "step": 0.1},
             call_button=False,
         )
 
@@ -219,11 +228,16 @@ class FluoroFateApp:
 
         self.action_buttons: List[QPushButton] = []
         run_all_button = self.make_button("Run All", self.on_run_all_clicked)
+        self.threshold_again_button = self.make_button(
+            "Threshold & Analyse Again", self.on_threshold_again_clicked, is_action_button=False
+        )
+        self.threshold_again_button.setEnabled(False)
         clear_log_button = self.make_button("Clear log", self.clear_log, is_action_button=False)
 
         run_widget = QWidget()
         run_layout = QVBoxLayout(run_widget)
         run_layout.addWidget(run_all_button)
+        run_layout.addWidget(self.threshold_again_button)
         run_layout.addWidget(self.progress_bar)
         log_row = QHBoxLayout()
         log_row.addStretch(1)
@@ -248,6 +262,8 @@ class FluoroFateApp:
     def set_buttons_enabled(self, enabled: bool) -> None:
         for button in self.action_buttons:
             button.setEnabled(enabled)
+        # Threshold-again only ever enabled after a successful pipeline run.
+        self.threshold_again_button.setEnabled(enabled and self.last_work_dir is not None)
 
     def append_log(self, message: str) -> None:
         self.log_widget.value = (self.log_widget.value.rstrip() + "\n" + message) if self.log_widget.value else message
@@ -269,8 +285,6 @@ class FluoroFateApp:
         qt_app = QApplication.instance()
         if qt_app is not None:
             qt_app.processEvents()
-
-    # ---- Dynamic widget hooks ---------------------------------------------
 
     def on_input_mode_changed(self, *event_args) -> None:
         is_single = str(self.inputs_panel.input_mode.value) == "Single image"
@@ -296,7 +310,7 @@ class FluoroFateApp:
         if tiff_path is None or not tiff_path.exists():
             return
         if self.last_refreshed_tiff_path is not None and tiff_path.resolve() == self.last_refreshed_tiff_path:
-            return  # No-op guard: avoids resetting user-picked channels on spurious widget events.
+            return  
         try:
             with tifffile.TiffFile(str(tiff_path)) as tif:
                 shape = tif.series[0].shape
@@ -310,13 +324,11 @@ class FluoroFateApp:
             current = widget.value if widget.value in choices else choices[0]
             widget.choices = choices
             widget.value = current
-        # Sensible default: brightfield = last channel (the common Incucyte/microscope layout).
-        if num_channels >= 1:
+        if num_channels >= 1 and not self._channels_initialised:
             self.inputs_panel.brightfield_channel.value = num_channels - 1
+            self._channels_initialised = True
         self.last_refreshed_tiff_path = tiff_path.resolve()
         LOGGER.info("Detected %d channel(s) in %s.", num_channels, tiff_path.name)
-
-    # ---- Path + config resolution -----------------------------------------
 
     def current_single_tiff_path(self) -> Optional[Path]:
         candidate = Path(str(self.inputs_panel.single_tiff.value))
@@ -410,7 +422,7 @@ class FluoroFateApp:
             "work_dir": str(work_dir),
             "brightfield_channel": brightfield_channel,
             "fluorophores": [{"name": name, "channel": channel_of[name], "threshold": threshold_of[name]} for name in fluor_names],
-            "blur_sigma": float(self.params_panel.blur_sigma.value),
+            "blur_sigma": FLUORESCENCE_DEFAULT_BLUR_SIGMA,
             "cellpose": {"model": "custom" if custom_model else str(self.params_panel.cellpose_model.value),
                          "custom_model_path": str(self.params_panel.custom_model_file.value) if custom_model else None,
                          "min_cell_size_px": int(self.params_panel.min_cell_size.value),
@@ -422,8 +434,8 @@ class FluoroFateApp:
                           "search_radius": float(self.params_panel.search_radius.value),
                           "max_frame_gap": int(self.params_panel.max_frame_gap.value),
                           "allow_splitting": bool(self.params_panel.allow_splitting.value),
-                          "splitting_max_distance": float(self.params_panel.splitting_max_distance.value),
-                          "allow_merging": bool(self.params_panel.allow_merging.value)},
+                          "splitting_max_distance": TRACKMATE_DEFAULT_SPLITTING_MAX_DISTANCE,
+                          "allow_merging": TRACKMATE_ALLOW_MERGING},
             "environment": {"platform": platform.platform(), "python": sys.version.split()[0],
                             "packages": package_versions, "git_commit": git_commit},
         }
@@ -516,8 +528,8 @@ class FluoroFateApp:
             search_radius=float(self.params_panel.search_radius.value),
             max_frame_gap=int(self.params_panel.max_frame_gap.value),
             allow_track_splitting=bool(self.params_panel.allow_splitting.value),
-            splitting_max_distance=float(self.params_panel.splitting_max_distance.value),
-            allow_track_merging=bool(self.params_panel.allow_merging.value),
+            splitting_max_distance=TRACKMATE_DEFAULT_SPLITTING_MAX_DISTANCE,
+            allow_track_merging=TRACKMATE_ALLOW_MERGING,
             imagej_instance=self.imagej_instance,
         )
         self.imagej_instance = trackmate_output["imagej_instance"]
@@ -570,8 +582,7 @@ class FluoroFateApp:
             lineage_lookup = pd.DataFrame(columns=lineage_columns)
 
         self.set_progress(10, fmt="Thresholding fluorescence...")
-        blur_sigma = float(self.params_panel.blur_sigma.value)
-        fluor_segmentation = segment_fluorescence(fluorophore_stacks, blur_sigma=blur_sigma, threshold_method=threshold_of)
+        fluor_segmentation = segment_fluorescence(fluorophore_stacks, blur_sigma=FLUORESCENCE_DEFAULT_BLUR_SIGMA, threshold_method=threshold_of)
         positive_label_stacks = {name: fluor_segmentation[name]["positive_labels"] for name in fluorophore_names}
         self.set_progress(30, fmt="Assigning blobs to cells...")
         frame_cell_positive_area, positive_cell_labels = compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_names)
@@ -585,7 +596,7 @@ class FluoroFateApp:
         persistent_fates_df, locked_labels, _persistent_per_frame = assign_persistent_fates(linked_labels, frame_cell_positive_area)
         persistent_fates_df = persistent_fates_df.sort_values("label_id").reset_index(drop=True)
         persistent_summary_df = compute_persistent_percentages(persistent_fates_df, num_frames, fluorophore_names)
-        persistent_figure, persistent_axes = plot_persistent_percentages(persistent_summary_df, fluorophore_names, title=file_stem)
+        persistent_figure, _ = plot_persistent_percentages(persistent_summary_df, fluorophore_names, title=file_stem)
         persistent_figure.savefig(str(work_dir / OUTPUT_PCT_PERSISTENT_PDF), bbox_inches="tight")
         plt.close(persistent_figure)
         LOGGER.info("Persistent fates: %s", dict(persistent_fates_df["fate"].value_counts()))
@@ -594,16 +605,65 @@ class FluoroFateApp:
         self.set_progress(75, fmt="Snapshot fate assignment...")
         snapshot_df = assign_snapshot_fates(linked_labels, frame_cell_positive_area).sort_values(["label_id", "frame"]).reset_index(drop=True)
         snapshot_summary_df, snapshot_categories = compute_snapshot_percentages(snapshot_df, num_frames)
-        snapshot_figure, snapshot_axes = plot_snapshot_percentages(snapshot_summary_df, snapshot_categories, title=file_stem)
+        snapshot_figure, _ = plot_snapshot_percentages(snapshot_summary_df, snapshot_categories, title=file_stem)
         snapshot_figure.savefig(str(work_dir / OUTPUT_PCT_SNAPSHOT_PDF), bbox_inches="tight")
         plt.close(snapshot_figure)
-        trajectory_figure, trajectory_axes = plot_snapshot_trajectories(tracks_dataframe, snapshot_df, title=f"{file_stem} — snapshot trajectories")
+        trajectory_figure, _ = plot_snapshot_trajectories(tracks_dataframe, snapshot_df, title=f"{file_stem} — snapshot trajectories")
         trajectory_figure.savefig(str(work_dir / OUTPUT_SNAPSHOT_TRAJECTORIES), bbox_inches="tight")
         plt.close(trajectory_figure)
-        timeline_figure, timeline_axes = plot_snapshot_cell_timelines(snapshot_df, tracks_dataframe=tracks_dataframe, title=f"{file_stem} — cell timelines")
+        timeline_figure, _ = plot_snapshot_cell_timelines(snapshot_df, tracks_dataframe=tracks_dataframe, title=f"{file_stem} — cell timelines")
         timeline_figure.savefig(str(work_dir / OUTPUT_SNAPSHOT_TIMELINES), bbox_inches="tight")
         plt.close(timeline_figure)
         LOGGER.info("Snapshot categories: %s", sorted(snapshot_df["category"].unique()))
+
+        # ---- Frame-presence-filtered plot variants (figures only; no CSVs) ----
+        for min_pct in FRAME_PRESENCE_THRESHOLDS_PCT:
+            suffix = f"min{min_pct}pct"
+            label = f"\u2265{min_pct}% of frames"
+            # Persistent
+            persistent_filtered = filter_persistent_by_frame_presence(
+                persistent_fates_df, linked_labels, num_frames, min_pct
+            )
+            if len(persistent_filtered) > 0:
+                persistent_summary_filtered = compute_persistent_percentages(
+                    persistent_filtered, num_frames, fluorophore_names
+                )
+                figure, _ = plot_persistent_percentages(
+                    persistent_summary_filtered, fluorophore_names,
+                    title=f"{file_stem} — persistent ({label}, n={len(persistent_filtered)})",
+                )
+                figure.savefig(str(work_dir / f"percentages_persistent_{suffix}.pdf"), bbox_inches="tight")
+                plt.close(figure)
+            else:
+                LOGGER.info("Persistent %s: no cells survive filter; skipping plot.", label)
+            # Snapshot
+            tracks_filtered, snapshot_filtered = filter_by_frame_presence(
+                tracks_dataframe, snapshot_df, num_frames, min_pct
+            )
+            if len(snapshot_filtered) > 0:
+                snapshot_summary_filtered, snapshot_categories_filtered = compute_snapshot_percentages(
+                    snapshot_filtered, num_frames
+                )
+                figure, _ = plot_snapshot_percentages(
+                    snapshot_summary_filtered, snapshot_categories_filtered,
+                    title=f"{file_stem} — snapshot ({label}, n={snapshot_filtered['label_id'].nunique()})",
+                )
+                figure.savefig(str(work_dir / f"percentages_snapshot_{suffix}.pdf"), bbox_inches="tight")
+                plt.close(figure)
+                figure, _ = plot_snapshot_trajectories(
+                    tracks_filtered, snapshot_filtered,
+                    title=f"{file_stem} — snapshot trajectories ({label})",
+                )
+                figure.savefig(str(work_dir / f"snapshot_trajectories_{suffix}.pdf"), bbox_inches="tight")
+                plt.close(figure)
+                figure, _ = plot_snapshot_cell_timelines(
+                    snapshot_filtered, tracks_dataframe=tracks_filtered,
+                    title=f"{file_stem} — cell timelines ({label})",
+                )
+                figure.savefig(str(work_dir / f"snapshot_timelines_{suffix}.pdf"), bbox_inches="tight")
+                plt.close(figure)
+            else:
+                LOGGER.info("Snapshot %s: no cells survive filter; skipping plots.", label)
 
         # ---- Consolidated per-(frame, cell) CSV ----
         per_frame_cells_df = compute_per_cell_intensity_area(linked_labels, fluorophore_stacks)
@@ -620,6 +680,7 @@ class FluoroFateApp:
             per_frame_cells_df[f"Snapshot {name}?"] = np.where(
                 per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N"
             )
+            per_frame_cells_df[f"{name} Threshold Method"] = str(threshold_of[name])
         # Merge lineage info (track_id, lineage_id, parent_track_id, generation)
         per_frame_cells_df["track_id"] = per_frame_cells_df["cell_id"].astype(int) - 1
         if len(lineage_lookup) > 0:
@@ -646,6 +707,7 @@ class FluoroFateApp:
         ]
         column_order += [f"{name} Fluorescence (Sum)" for name in fluorophore_names]
         column_order += [f"Thresholded {name} Area (Pixels)" for name in fluorophore_names]
+        column_order += [f"{name} Threshold Method" for name in fluorophore_names]
         column_order += [f"Persistently {name}?" for name in fluorophore_names]
         column_order += [f"Snapshot {name}?" for name in fluorophore_names]
         per_frame_cells_df = per_frame_cells_df[column_order]
@@ -682,33 +744,41 @@ class FluoroFateApp:
 
     # ---- Helpers ----------------------------------------------------------
 
-    @staticmethod
-    def attach_lineage(dataframe: pd.DataFrame, lineage_lookup: pd.DataFrame) -> pd.DataFrame:
-        """Add ``track_id`` and lineage columns to a cell-id-indexed dataframe."""
-        out = dataframe.copy()
-        out["track_id"] = out["cell_id"].astype(int) - 1
-        front = ["cell_id", "track_id"]
-        if len(lineage_lookup) > 0:
-            out = out.merge(lineage_lookup, on="track_id", how="left")
-            front = ["cell_id", "track_id", "lineage_id", "parent_track_id", "generation"]
-        return out[front + [c for c in out.columns if c not in front]]
-
     def show_in_viewer(self, layer_specs: List[dict]) -> None:
         """Render a list of layer specs in napari (clears existing layers first)."""
         self.viewer.layers.clear()
         for spec in layer_specs:
-            kind = spec.pop("kind")
-            if kind == "image":
-                self.viewer.add_image(**spec)
-            elif kind == "labels":
-                self.viewer.add_labels(**spec)
-            elif kind == "labels_coloured":
-                add_coloured_labels(self.viewer, spec.pop("data"), name=spec.pop("name"),
-                                    base_colour=spec.pop("base_colour"), opacity=spec.pop("opacity", 0.5), **spec)
-            elif kind == "tracks":
-                self.viewer.add_tracks(**spec)
-            else:
-                LOGGER.warning("Unknown layer kind: %s", kind)
+            self._add_layer_from_spec(spec)
+
+    def replace_analysis_layers(self, layer_specs: List[dict]) -> None:
+        """Remove existing snapshot/persistent analysis layers and add new ones, preserving brightfield/seg/tracks."""
+        new_names = {spec.get("name") for spec in layer_specs}
+        analysis_prefixes = ("Persistent:", "Snapshot:")
+        layers_to_remove = [
+            layer.name for layer in list(self.viewer.layers)
+            if layer.name in new_names or layer.name.startswith(analysis_prefixes)
+        ]
+        for layer_name in layers_to_remove:
+            try:
+                del self.viewer.layers[layer_name]
+            except (KeyError, IndexError):
+                pass
+        for spec in layer_specs:
+            self._add_layer_from_spec(spec)
+
+    def _add_layer_from_spec(self, spec: dict) -> None:
+        kind = spec.pop("kind")
+        if kind == "image":
+            self.viewer.add_image(**spec)
+        elif kind == "labels":
+            self.viewer.add_labels(**spec)
+        elif kind == "labels_coloured":
+            add_coloured_labels(self.viewer, spec.pop("data"), name=spec.pop("name"),
+                                base_colour=spec.pop("base_colour"), opacity=spec.pop("opacity", 0.5), **spec)
+        elif kind == "tracks":
+            self.viewer.add_tracks(**spec)
+        else:
+            LOGGER.warning("Unknown layer kind: %s", kind)
 
     # ---- Button handlers --------------------------------------------------
 
@@ -745,13 +815,34 @@ class FluoroFateApp:
     def run_full_pipeline(self, tiff_path: Path, out_dir: Path, *, render_in_viewer: bool) -> Optional[dict]:
         work_dir = self.begin_workdir(tiff_path, out_dir)
         try:
-            seg_data_ignored, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
-            track_data_ignored, track_specs = self.run_stage_tracking(tiff_path, work_dir)
+            _seg_data, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
+            _track_data, track_specs = self.run_stage_tracking(tiff_path, work_dir)
             summary_record, analysis_specs = self.run_stage_analysis(tiff_path, work_dir)
             if render_in_viewer:
                 self.show_in_viewer(seg_specs + track_specs + analysis_specs)
             LOGGER.info("Pipeline complete: %s", tiff_path.name)
+            self.last_tiff_path = tiff_path
+            self.last_work_dir = work_dir
+            self.threshold_again_button.setEnabled(True)
             return summary_record
+        finally:
+            self.end_workdir()
+
+    @gui_action("Threshold & Analyse Again")
+    def on_threshold_again_clicked(self) -> None:
+        if self.last_work_dir is None or self.last_tiff_path is None:
+            LOGGER.warning("Run the full pipeline first before re-thresholding.")
+            return
+        if not (self.last_work_dir / OUTPUT_LINKED).exists():
+            LOGGER.warning("Linked-labels output missing in %s; re-run the full pipeline.", self.last_work_dir)
+            return
+        tiff_path = self.last_tiff_path
+        out_dir = self.last_work_dir.parent
+        work_dir = self.begin_workdir(tiff_path, out_dir)
+        try:
+            _summary_record, analysis_specs = self.run_stage_analysis(tiff_path, work_dir)
+            self.replace_analysis_layers(analysis_specs)
+            LOGGER.info("Re-thresholded analysis complete: %s", tiff_path.name)
         finally:
             self.end_workdir()
 

@@ -8,8 +8,8 @@ build_lineage_dataframe(spot_records, edges)
     parent/generation columns.
 generate_trackmate_labels(masks_path, output_directory, ...)
     Run TrackMate headlessly on a 2-D + time mask stack, write the
-    tracks CSV, lineage summary CSV and a re-labelled "linked labels"
-    TIFF where every cell carries a globally unique track-derived ID.
+    tracks CSV and a re-labelled "linked labels" TIFF where every cell
+    carries a globally unique track-derived ID.
 
 Convention
 ----------
@@ -135,12 +135,10 @@ def generate_trackmate_labels(masks_path, output_directory, target_channel=1, si
     is enabled, then re-paints the masks so each tracked cell carries a
     globally unique label across all frames.
 
-    Three files are written into ``output_directory``:
+    Two files are written into ``output_directory``:
 
     * ``trackmate_tracks.csv``        — one row per (spot, frame) with
       ``track_id, t, y, x, quality, lineage_id, parent_track_id, generation``.
-    * ``lineage_summary.csv``         — one row per ``track_id`` with its
-      lineage ID, parent track, generation and frame range.
     * ``linked_labels_trackmate.tiff``— uint32 label stack where every
       cell in every frame has the same ID across time.
 
@@ -274,9 +272,6 @@ def generate_trackmate_labels(masks_path, output_directory, target_channel=1, si
     output_directory.mkdir(parents=True, exist_ok=True)
     tracks_csv_path = output_directory / "trackmate_tracks.csv"
     tracks_dataframe.to_csv(tracks_csv_path, index=False)
-
-    lineage_summary = (tracks_dataframe.groupby("track_id").agg(lineage_id=("lineage_id", "first"), parent_track_id=("parent_track_id", "first"), generation=("generation", "first"), first_frame=("t", "min"), last_frame=("t", "max"), n_frames=("t", "count")).reset_index().sort_values("lineage_id"))
-    lineage_summary.to_csv(output_directory / "lineage_summary.csv", index=False)
 
     masks_stack = tifffile.imread(str(masks_path))
     linked_labels_stack = np.zeros_like(masks_stack, dtype=np.uint32)
