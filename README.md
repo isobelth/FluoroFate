@@ -187,7 +187,7 @@ The thresholding method can be changed in the Inputs panel and the pipeline re-r
 
 ## Output Files
 
-All per-image outputs are saved in a per-image subfolder (named after the TIFF stem) under the output directory. Each per-image folder also contains an auto-generated `outputs_README.md` describing every file.
+All per-image outputs are saved in a per-image subfolder (named after the TIFF stem) under the output directory.
 
 ### Segmentation and Tracking Outputs
 
@@ -230,7 +230,6 @@ For each plot type below, FluoroFate writes one "all cells" PDF plus three frame
 |---|---|
 | `run_config.json` | Every parameter used for this run (Cellpose, TrackMate, fluorophores, thresholds, brightfield), package versions, platform, and git commit |
 | `run.log` | Full run log (also streamed live in the Run & Log dock widget) |
-| `outputs_README.md` | Auto-generated description of every output file in the folder |
 
 ### Batch-Level Output
 

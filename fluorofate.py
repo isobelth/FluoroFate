@@ -61,8 +61,7 @@ FLUORESCENCE_DEFAULT_BLUR_SIGMA = 1.0
 THRESHOLD_CHOICES = ["mean", "minimum", "yen", "otsu", "triangle"]
 MODEL_CHOICES = ["cpsam", "cyto3", "cyto2", "cyto", "nuclei"]
 
-# Output filenames (single source of truth). Used everywhere a file is read
-# or written, and used to build outputs_README.md.
+# Output filenames (single source of truth). Used everywhere a file is read or written.
 OUTPUT_MASKS = "masks_stack.tiff"
 OUTPUT_LINKED = "linked_labels_trackmate.tiff"
 OUTPUT_TRACKS = "trackmate_tracks.csv"
@@ -76,7 +75,6 @@ OUTPUT_SNAPSHOT_TIMELINES = "snapshot_timelines.pdf"
 FRAME_PRESENCE_THRESHOLDS_PCT = (40, 60, 80)
 OUTPUT_RUN_CONFIG = "run_config.json"
 OUTPUT_RUN_LOG = "run.log"
-OUTPUT_README = "outputs_README.md"
 OUTPUT_BATCH_SUMMARY = "batch_summary.csv"
 
 OUTPUT_DESCRIPTIONS: Dict[str, str] = {
@@ -94,7 +92,6 @@ OUTPUT_DESCRIPTIONS: Dict[str, str] = {
     **{f"snapshot_timelines_min{p}pct.pdf": f"Snapshot per-cell timelines — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     OUTPUT_RUN_CONFIG: "All parameters used for this run (full provenance).",
     OUTPUT_RUN_LOG: "Full log for this run.",
-    OUTPUT_README: "This file: description of every output.",
 }
 
 
@@ -452,9 +449,6 @@ class FluoroFateApp:
         logging.getLogger().addHandler(file_handler)
         self.workdir_file_handler = file_handler
         LOGGER.info("Working directory: %s", work_dir)
-        readme_lines = ["# FluoroFate outputs", "", "Files written into this directory:", ""]
-        readme_lines += [f"- `{filename}` — {description}" for filename, description in OUTPUT_DESCRIPTIONS.items()]
-        (work_dir / OUTPUT_README).write_text("\n".join(readme_lines) + "\n", encoding="utf-8")
         return work_dir
 
     def end_workdir(self) -> None:
