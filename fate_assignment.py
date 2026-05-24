@@ -99,8 +99,22 @@ def assign_persistent_fates(linked_labels, frame_cell_positive_area):
 
     locked_labels = {}
     for fluorophore_name in fluorophore_names:
-        fate_cell_ids = fates_dataframe.loc[fates_dataframe["fate"] == fluorophore_name, "label_id"].to_numpy(dtype=np.uint32)
-        locked_labels[fluorophore_name] = np.where(np.isin(linked_labels, fate_cell_ids), linked_labels, 0).astype(np.uint32)
+        # Paint each fated cell only from its first-positive frame onwards, so
+        # the persistent layer means "cumulatively positive by this frame" and
+        # cells freshly becoming persistent-positive at frame N coincide with
+        # the snapshot-positive layer at frame N.
+        fate_rows = fates_dataframe[fates_dataframe["fate"] == fluorophore_name]
+        stack = np.zeros_like(linked_labels, dtype=np.uint32)
+        first_frame_column = f"first_{fluorophore_name}_frame"
+        for _, fate_row in fate_rows.iterrows():
+            cell_id = int(fate_row["label_id"])
+            first_positive_frame = fate_row[first_frame_column]
+            if pd.isna(first_positive_frame):
+                continue
+            first_positive_frame = int(first_positive_frame)
+            frames_slice = linked_labels[first_positive_frame:]
+            stack[first_positive_frame:] = np.where(frames_slice == cell_id, cell_id, stack[first_positive_frame:])
+        locked_labels[fluorophore_name] = stack
 
     per_frame_dataframe = pd.DataFrame(per_frame_rows)
     if len(per_frame_dataframe) > 0:

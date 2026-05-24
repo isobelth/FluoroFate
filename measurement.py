@@ -10,6 +10,7 @@ landed on background or straddled two cells).
 import logging
 
 import numpy as np
+import pandas as pd
 from skimage.measure import regionprops
 
 LOGGER = logging.getLogger(__name__)
@@ -123,3 +124,53 @@ def compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_na
                 per_frame_positive_labels[frame_index] = np.where(is_positive, linked_labels[frame_index], 0)
         positive_cell_labels[fluorophore_name] = per_frame_positive_labels
     return frame_cell_positive_area, positive_cell_labels
+
+
+def compute_per_cell_intensity_area(linked_labels, fluorophore_stacks):
+    """Compute per-cell, per-frame area and summed fluorescence intensity.
+
+    For every tracked cell present in a frame, sums the raw pixel
+    intensity of each fluorescence channel inside that cell's mask and
+    records the cell's area in pixels. No thresholding is applied — this
+    is a direct measurement on the tracked label image.
+
+    Parameters
+    ----------
+    linked_labels : numpy.ndarray, shape (n_frames, H, W), integer dtype
+        Tracked cell segmentation produced by TrackMate
+        (0 = background; non-zero = cell ID, consistent across frames).
+    fluorophore_stacks : dict[str, numpy.ndarray]
+        ``{fluorophore_name: (n_frames, H, W) array}`` of raw
+        fluorescence images.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns: ``frame``, ``cell_id``, ``area_px``, and one
+        ``<fluorophore>_total_intensity`` column per fluorophore. One
+        row per (frame, cell present in that frame).
+    """
+    fluorophore_names = list(fluorophore_stacks.keys())
+    num_frames = linked_labels.shape[0]
+    intensity_columns = [f"{name}_total_intensity" for name in fluorophore_names]
+
+    rows = []
+    for frame_index in range(num_frames):
+        frame_labels = linked_labels[frame_index]
+        flat_labels = frame_labels.ravel()
+        max_label = int(flat_labels.max()) if flat_labels.size else 0
+        if max_label == 0:
+            continue
+        areas = np.bincount(flat_labels, minlength=max_label + 1)
+        intensity_sums = {}
+        for fluorophore_name in fluorophore_names:
+            channel_pixels = fluorophore_stacks[fluorophore_name][frame_index].ravel().astype(np.float64)
+            intensity_sums[fluorophore_name] = np.bincount(flat_labels, weights=channel_pixels, minlength=max_label + 1)
+        present_cell_ids = np.nonzero(areas[1:])[0] + 1
+        for cell_id in present_cell_ids:
+            row = {"frame": int(frame_index), "cell_id": int(cell_id), "area_px": int(areas[cell_id])}
+            for fluorophore_name in fluorophore_names:
+                row[f"{fluorophore_name}_total_intensity"] = float(intensity_sums[fluorophore_name][cell_id])
+            rows.append(row)
+
+    return pd.DataFrame(rows, columns=["frame", "cell_id", "area_px"] + intensity_columns)

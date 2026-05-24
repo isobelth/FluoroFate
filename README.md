@@ -28,7 +28,7 @@ Segmented objects are linked across time using TrackMate, which is run headlessl
 
 Fluorescence analysis can be performed on up to three user-defined channels. Each fluorescence channel is Gaussian-blurred and thresholded independently using one of several selectable global thresholding methods. Binary positive masks are generated for each frame and channel, and the overlap between positive pixels and each tracked cell mask is quantified using the centroid of each thresholded fluorescence object. In addition to fluorescence positivity, cell area and roundness are measured from the tracked masks, where roundness is defined as the ratio of the minor to major axis lengths of the equivalent ellipse.
 
-Each tracked cell is then classified using one of two analysis modes (described in detail below), and the results are exported as CSV files and publication-ready PDF plots.
+Each tracked cell is then classified using two complementary analysis modes (both always run; see [Analysis Modes](#analysis-modes) below), and the results are exported as CSV files and publication-ready PDF plots.
 
 ![Quantify positive cells and generate percentage curves](images/image2.png)
 
@@ -93,89 +93,65 @@ To train a custom model:
 
 An example custom model is included in the `Example_Custom_Cellpose_Model` folder for reference.
 
-To use a custom model in FluoroFate: in the **Analysis** panel, click the file picker next to **Select file (optional custom model)** and select your model file. The built-in model dropdown will be disabled automatically.
+To use a custom model in FluoroFate: in the **Parameters** panel, click the file picker next to **Custom model (optional)** and select your model file. The built-in model dropdown will be disabled automatically.
 
 ---
 
 ## Graphical Interface
 
-The FluoroFate interface is organised into configuration panels on the right side of the napari viewer. All parameters have sensible defaults and can be adjusted without writing any code.
+The FluoroFate interface is organised into two configuration dock widgets (**Inputs** and **Parameters**) plus a **Run & Log** dock widget on the right side of the napari viewer. All parameters have sensible defaults and can be adjusted without writing any code.
 
-### Files Panel
-
-| Parameter | Description |
-|---|---|
-| Single TIFF | Path to one multi-channel timelapse TIFF |
-| Batch folder | Folder of TIFFs (for batch processing) |
-| Output directory | Where results are saved (defaults to a subfolder next to the input image) |
-
-### Channels Panel
-
-Up to three fluorescence channels can be configured. Each channel has an associated name (used in all output files and plots), a channel index, and a thresholding method.
+### Inputs Panel
 
 | Parameter | Default | Description |
 |---|---|---|
-| Brightfield channel | -1 (last) | Channel index for brightfield |
+| Input mode | Single image | `Single image` runs on one TIFF; `Folder of images` batches every TIFF in a folder |
+| Single TIFF | *(empty)* | Path to one multi-channel timelapse TIFF (used in Single image mode) |
+| Batch folder | *(empty)* | Folder of TIFFs (used in Folder mode) |
+| Output directory | *(empty)* | **Required.** Where results are saved (one subfolder per TIFF, named after the file) |
+| Brightfield channel | last channel | Channel index for brightfield. Defaults to the last channel when a TIFF is loaded |
 | Fluorophore 1 name | Green | Label used in output columns and filenames |
-| Fluorophore 1 channel | 0 | Channel index |
-| Fluorophore 1 threshold | otsu | Thresholding method |
-| Fluorophore 2 name | Red | Label used in output columns and filenames |
-| Fluorophore 2 channel | 1 | Channel index |
-| Fluorophore 2 threshold | otsu | Thresholding method |
-| Fluorophore 3 name | *(blank)* | Leave blank to use only two channels |
-| Fluorophore 3 channel | 2 | Channel index |
-| Fluorophore 3 threshold | otsu | Thresholding method |
+| Fluorophore 1 channel | 0 | Channel index for fluorophore 1 |
+| Fluorophore 1 threshold | otsu | Thresholding method for fluorophore 1 (see [Thresholding Methods](#thresholding-methods)) |
+| Fluorophore 2 name | *(blank)* | Leave blank to analyse only one fluorescence channel |
+| Fluorophore 2 channel | 1 | Channel index for fluorophore 2 |
+| Fluorophore 2 threshold | otsu | Thresholding method for fluorophore 2 |
+| Fluorophore 3 name | *(blank)* | Leave blank to analyse fewer than three fluorescence channels |
+| Fluorophore 3 channel | 2 | Channel index for fluorophore 3 |
+| Fluorophore 3 threshold | otsu | Thresholding method for fluorophore 3 |
 
-### Analysis Panel
+> Channel-index dropdowns are auto-populated from the selected TIFF (or the first TIFF in the selected batch folder). Between one and three fluorescence channels are supported — leave the fluorophore 2 and/or 3 name fields blank to skip them.
 
-| Parameter | Default | Description |
-|---|---|---|
-| Analysis mode | persistent | `persistent` or `snapshot` — see [Analysis Modes](#analysis-modes) below |
-| Blur sigma | 1.0 | Gaussian blur sigma applied before thresholding |
-| Custom model file | *(empty)* | Optional `.pt`/`.pth` Cellpose model; overrides the built-in model |
-
-### Cellpose Panel
+### Parameters Panel
 
 | Parameter | Default | Description |
 |---|---|---|
-| Model | cpsam | Built-in Cellpose model (disabled when a custom model is selected) |
-| Min cell size | 15 | Minimum object area in pixels |
-| Use GPU | True | Enable GPU acceleration |
+| Cellpose model | cpsam | Built-in Cellpose model (disabled when a custom model file is selected) |
+| Custom model (optional) | *(empty)* | Optional `.pt`/`.pth` Cellpose model; overrides the built-in model |
+| Min cell size (px) | 15 | Minimum object area in pixels |
+| Use GPU | True | Enable GPU acceleration for Cellpose |
+| TM init search radius | 30.0 | TrackMate initial linking distance (pixels) |
+| TM search radius | 150.0 | TrackMate Kalman search radius (pixels) |
+| TM max frame gap | 2 | Maximum frames a cell can be absent before the track is terminated |
+| TM allow splitting | True | Enable detection of cell division events (required for lineage inference) |
+| TM splitting max distance | 15.0 | Maximum distance for splitting links (pixels; only used when splitting is enabled) |
+| TM allow merging | False | Enable detection of cell fusion events |
+| Fluor. blur sigma | 1.0 | Gaussian blur sigma applied before thresholding |
 
-### TrackMate Panel
-
-| Parameter | Default | Description |
-|---|---|---|
-| Init search radius | 30.0 | Initial linking distance (pixels) |
-| Search radius | 150.0 | Kalman filter search radius (pixels) |
-| Max frame gap | 3 | Maximum number of frames a cell can be absent before the track is terminated |
-| Allow splitting | False | Enable detection of cell division events |
-| Splitting max distance | 15.0 | Maximum distance for splitting links (pixels; only used when splitting is enabled) |
-| Allow merging | False | Enable detection of cell fusion events |
-
----
-
-## Running the Analysis
-
-The workflow can be run either stepwise (for inspection and parameter adjustment between stages) or as a complete end-to-end analysis on a single image. Batch processing of all files within a folder is also supported.
+### Run & Log Panel
 
 | Button | Function |
 |---|---|
-| **1) Run Segmentation** | Cellpose segmentation only; saves `masks_stack.tiff` |
-| **2) Run Tracking** | TrackMate tracking from saved masks; saves `linked_labels_trackmate.tiff` and `trackmate_tracks.csv` |
-| **3a) Run Persistent Analysis** | Persistent fate assignment and plot generation from saved tracking |
-| **3b) Run Snapshot Analysis** | Snapshot fate assignment and plot generation from saved tracking |
-| **Run All (Single Image)** | Complete pipeline on one image (segmentation → tracking → both analysis modes) |
-| **Analyse All in Folder** | Batch processing of every TIFF in a folder; saves a combined `batch_summary.csv` |
-| **Save Results** | Export accumulated results to a user-selected CSV |
+| **Run All** | Single image: full pipeline (segmentation → tracking → analysis). Folder: batch every TIFF and write `batch_summary.csv` |
+| **Clear log** | Empties the in-GUI log panel (the `run.log` file on disk is preserved) |
 
-Because each stage saves its intermediate outputs, analysis parameters (such as thresholding method or analysis mode) can be adjusted and the analysis re-run without repeating segmentation or tracking.
+The progress bar and the live log are below the button. Each run also appends to `run.log` in the per-image output folder.
 
 ---
 
 ## Analysis Modes
 
-Two complementary analysis modes are available, corresponding to different biological questions.
+FluoroFate **always runs both** of the following analysis modes when the analysis stage executes. They answer different biological questions, and producing both lets you compare them without re-running the pipeline.
 
 ### Persistent Mode
 
@@ -197,7 +173,7 @@ This mode is appropriate for analyses in which cell states change dynamically ov
 
 ## Thresholding Methods
 
-Each fluorophore channel can use a different global thresholding method, selected in the Channels panel. A Gaussian blur (controlled by the blur sigma parameter) is applied before thresholding to reduce noise.
+Each fluorophore channel can use a different global thresholding method, selected in the Inputs panel. A Gaussian blur (controlled by the blur sigma parameter in the Parameters panel) is applied before thresholding to reduce noise.
 
 | Method | Description |
 |---|---|
@@ -207,52 +183,63 @@ Each fluorophore channel can use a different global thresholding method, selecte
 | **triangle** | Triangle algorithm; suitable for unimodal histograms with an extended tail |
 | **minimum** | Histogram-based minimum method; assumes a bimodal distribution |
 
-The thresholding method can be changed and the analysis re-run (using buttons 3a or 3b) without repeating segmentation or tracking.
+The thresholding method can be changed in the Inputs panel and the pipeline re-run.
 
 ---
 
 ## Output Files
 
-All outputs are saved in a per-image subfolder under the output directory.
+All per-image outputs are saved in a per-image subfolder (named after the TIFF stem) under the output directory. Each per-image folder also contains an auto-generated `outputs_README.md` describing every file.
 
 ### Segmentation and Tracking Outputs
 
 | File | Description |
 |---|---|
-| `masks_stack.tiff` | Cellpose segmentation masks (T, Y, X) |
+| `masks_stack.tiff` | Cellpose segmentation masks (T, Y, X), uint16 |
 | `linked_labels_trackmate.tiff` | Tracked label stack with consistent cell IDs across frames |
-| `trackmate_tracks.csv` | Per-spot data: `track_id`, `t`, `y`, `x`, `quality`, `lineage_id`, `parent_track_id`, `generation` |
-| `trackmate_tracks_by_cell.csv` | Same data with `cell_id` (= track_id + 1) and `frame` columns |
-| `lineage_summary.csv` | One row per track: lineage ID, parent track, generation, first/last frame, number of frames |
+| `trackmate_tracks.csv` | TrackMate spot-level output (intermediate; required for staged Tracking → Analysis runs) |
 
-### Persistent Mode Outputs
+### Per-Cell, Per-Frame Output
 
 | File | Description |
 |---|---|
-| `assignments_persistent.csv` | Per-cell fate, first-positive frame, and positive area per fluorophore |
-| `persistent_by_cell.csv` | Same with `cell_id`, `track_id`, and lineage columns |
-| `percentages_persistent.csv` | Cumulative percentage of positive cells per frame |
-| `percentages_persistent.pdf` | Line plot of cumulative percentages |
-| `percentages_persistent_{N}pct.csv/pdf` | Filtered to cells present in ≥N% of frames (N = 30, 40, 50, 60) |
+| `per_frame_cells.csv` | **The single analysis output.** One row per (frame, cell), consolidating area, raw fluorescence, thresholded positive area, persistent + snapshot fate flags, and lineage info |
 
-### Snapshot Mode Outputs
+Columns (in order):
+
+- `Frame ID`, `Cell ID`, `Track ID`, `Lineage ID`, `Parent Track ID`, `Generation`
+- `Cell Area (pixels)`
+- `{Fluorophore} Fluorescence (Sum)` — summed raw intensity inside the cell mask (no thresholding)
+- `Thresholded {Fluorophore} Area (Pixels)` — pixels of thresholded positive blobs assigned to this cell at this frame
+- `Persistently {Fluorophore}?` — `Y`/`N`, constant per cell (the cell's assigned persistent fate). A cell can be persistently `Y` for at most one fluorophore.
+- `Snapshot {Fluorophore}?` — `Y`/`N`, per frame; `Y` iff `Thresholded {Fluorophore} Area (Pixels) > 0`
+
+### Plot Outputs
 
 | File | Description |
 |---|---|
-| `snapshot.csv` | Per-cell per-frame category, boolean flags, and positive area per fluorophore |
-| `snapshot_by_cell_long.csv` | Long-format data with `cell_id`, `track_id`, `frame`, `category`, and lineage columns |
-| `snapshot_by_cell_wide.csv` | Wide-format data: one row per cell, one column per frame category |
-| `percentages_snapshot.csv` | Per-frame category percentages |
-| `percentages_snapshot.pdf` | Line plot of category percentages |
-| `percentages_snapshot_{N}pct.csv/pdf` | Filtered to cells present in ≥N% of frames |
-| `snapshot_trajectories_{N}pct.pdf` | Spatial trajectory plots coloured by category |
-| `snapshot_timelines_{N}pct.pdf` | Swimlane timeline plots showing each cell's classification over time |
+| `percentages_persistent.pdf` | Cumulative percentage of persistently-positive cells per frame |
+| `percentages_snapshot.pdf` | Per-frame snapshot-category percentages |
+| `snapshot_trajectories.pdf` | XY trajectory plots coloured by snapshot category |
+| `snapshot_timelines.pdf` | Per-cell horizontal-bar timeline coloured by category |
+
+### Run-Level Outputs
+
+| File | Description |
+|---|---|
+| `run_config.json` | Every parameter used for this run (Cellpose, TrackMate, fluorophores, thresholds, blur, brightfield), package versions, platform, and git commit |
+| `run.log` | Full run log (also streamed live in the Run & Log dock widget) |
+| `outputs_README.md` | Auto-generated description of every output file in the folder |
+
+### Batch-Level Output
+
+In folder mode, a single `batch_summary.csv` is written at the top of the output directory. It contains one row per processed image with both persistent (per-fluorophore final percentages, fate counts) and snapshot (per-category final percentages) summary columns.
 
 ### Notes on Output Data
 
-- **All CSV files include every tracked cell** regardless of track length. Frame-presence filtering (30%, 40%, 50%, 60%) is applied only to the filtered output plots and their corresponding CSV files.
-- **Positive area columns** (`{fluorophore}_positive_area`) report the number of thresholded positive pixels overlapping each cell mask — per fluorophore per frame (snapshot mode) or summed across all frames (persistent mode).
-- **Lineage columns** (`lineage_id`, `parent_track_id`, `generation`) are populated when TrackMate splitting is enabled. Lineage IDs use dotted notation (e.g. `1`, `1.1`, `1.2`) to group mother and daughter cells.
+- **`per_frame_cells.csv` contains every tracked cell** regardless of track length. To restrict downstream analyses to longer-lived cells, filter on the `Frame ID` column yourself.
+- **Thresholded area columns** report the number of thresholded positive pixels overlapping each cell mask — per fluorophore per frame.
+- **Lineage columns** (`Lineage ID`, `Parent Track ID`, `Generation`) are populated when TrackMate splitting is enabled (the default). Lineage IDs use dotted notation (e.g. `1`, `1.1`, `1.2`) to group mother and daughter cells.
 
 ---
 
