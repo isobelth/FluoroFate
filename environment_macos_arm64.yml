@@ -1,0 +1,61 @@
+name: fluorofate
+
+channels:
+  - conda-forge
+  - pytorch
+
+dependencies:
+  - python=3.11
+  - pip
+
+  # Core scientific stack
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-image
+  - tifffile
+  - imageio
+  - pillow
+  - networkx
+
+  # Jupyter
+  - ipykernel
+  - jupyterlab
+
+  # Napari / GUI
+  - napari
+  - pyside6
+  - qtpy
+  - vispy
+  - magicgui
+  - superqt
+
+  # PyTorch (Apple Silicon / MPS)
+  - pytorch
+  - torchvision
+
+  # Useful compiled deps
+  - pyzmq
+  - psutil
+  - tqdm
+  - zarr
+  - numcodecs
+
+  - pip:
+      - cellpose==4.1.1
+      - opencv-python-headless
+      - segment-anything
+      - bermuda==0.1.7
+      - fill-voids==2.1.1
+      - pyimagej==1.8.0
+      - scyjava==1.12.5
+      - napari-imagej==0.2.0
+      - imglyb==2.1.0
+      - jgo==2.2.0
+      - labeling==0.1.14
+      - liffile==2026.2.16
+      - roifile==2026.2.10
+      - statsmodels
+      - xarray
