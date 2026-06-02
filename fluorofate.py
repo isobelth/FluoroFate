@@ -60,6 +60,9 @@ TRACKMATE_ALLOW_MERGING = False
 FLUORESCENCE_DEFAULT_BLUR_SIGMA = 1.0
 THRESHOLD_CHOICES = ["mean", "minimum", "yen", "otsu", "triangle"]
 MODEL_CHOICES = ["cpsam", "cyto3", "cyto2", "cyto", "nuclei"]
+# When "use existing label images" is enabled, each input image <name>.tif must
+# have a matching label stack named <name>_labels.tif (or .tiff) in the labels folder.
+EXISTING_LABEL_SUFFIX = "_labels"
 
 # Output filenames (single source of truth). Used everywhere a file is read or written.
 OUTPUT_MASKS = "masks_stack.tiff"
@@ -141,6 +144,7 @@ class FluoroFateApp:
     @staticmethod
     def inputs_signature_template(input_mode: str = "Single image", single_tiff: Path = Path(),
                                   batch_folder: Path = Path(), output_directory: Path = Path(),
+                                  use_existing_labels: bool = False, labels_folder: Path = Path(),
                                   brightfield_channel: int = 0,
                                   fluor_1_name: str = "Green", fluor_1_channel: int = 0, fluor_1_threshold: str = "otsu",
                                   fluor_2_name: str = "", fluor_2_channel: int = 0, fluor_2_threshold: str = "otsu",
@@ -191,6 +195,8 @@ class FluoroFateApp:
             single_tiff={"label": "Single TIFF", "mode": "r", "filter": "*.tif *.tiff"},
             batch_folder={"label": "Batch folder", "mode": "d"},
             output_directory={"label": "Output directory", "mode": "d"},
+            use_existing_labels={"label": "Use existing label images"},
+            labels_folder={"label": "Labels folder", "mode": "d"},
             brightfield_channel={"label": "Brightfield channel", "widget_type": "ComboBox", "choices": [0]},
             fluor_1_name={"label": "Fluorophore 1 name"},
             fluor_1_channel={"label": "Fluorophore 1 channel", "widget_type": "ComboBox", "choices": [0]},
@@ -219,9 +225,11 @@ class FluoroFateApp:
         self.inputs_panel.input_mode.changed.connect(self.on_input_mode_changed)
         self.inputs_panel.single_tiff.changed.connect(self.on_single_tiff_changed)
         self.inputs_panel.batch_folder.changed.connect(self.on_batch_folder_changed)
+        self.inputs_panel.use_existing_labels.changed.connect(self.on_use_existing_labels_changed)
         self.params_panel.custom_model_file.changed.connect(self.on_custom_model_file_changed)
         self.on_input_mode_changed()
         self.on_custom_model_file_changed()
+        self.on_use_existing_labels_changed()
 
         self.action_buttons: List[QPushButton] = []
         run_all_button = self.make_button("Run All", self.on_run_all_clicked)
@@ -293,6 +301,15 @@ class FluoroFateApp:
         self.params_panel.cellpose_model.enabled = not use_custom
         self.params_panel.cellpose_model.tooltip = "Disabled because a custom model file is selected." if use_custom else ""
 
+    def on_use_existing_labels_changed(self, *event_args) -> None:
+        use_labels = bool(self.inputs_panel.use_existing_labels.value)
+        self.inputs_panel.labels_folder.enabled = use_labels
+        # Cellpose parameters are unused when existing labels are loaded instead of segmenting.
+        for widget_name in ("cellpose_model", "custom_model_file", "min_cell_size", "use_gpu"):
+            getattr(self.params_panel, widget_name).enabled = not use_labels
+        if not use_labels:
+            self.on_custom_model_file_changed()
+
     def on_single_tiff_changed(self, *event_args) -> None:
         self.refresh_channel_choices_from(self.current_single_tiff_path())
 
@@ -334,6 +351,48 @@ class FluoroFateApp:
     def custom_model_is_selected(self) -> bool:
         value = str(self.params_panel.custom_model_file.value).strip()
         return bool(value and value != ".")
+
+    def using_existing_labels(self) -> bool:
+        return bool(self.inputs_panel.use_existing_labels.value)
+
+    def label_path_for(self, tiff_path: Path) -> Optional[Path]:
+        """Return the existing-label stack matching ``<stem>_labels.tif(f)``, or None."""
+        labels_folder = Path(str(self.inputs_panel.labels_folder.value))
+        for extension in (".tif", ".tiff"):
+            candidate = labels_folder / f"{tiff_path.stem}{EXISTING_LABEL_SUFFIX}{extension}"
+            if candidate.exists():
+                return candidate
+        return None
+
+    def validate_existing_labels(self, image_paths: List[Path]) -> List[str]:
+        """Check the labels folder matches the input images. Returns a list of problems (empty if OK)."""
+        labels_folder_raw = str(self.inputs_panel.labels_folder.value).strip()
+        labels_folder = Path(labels_folder_raw)
+        if not labels_folder_raw or labels_folder_raw == "." or not labels_folder.is_dir():
+            return ["Select a valid labels folder (or untick 'Use existing label images')."]
+        problems: List[str] = []
+        label_files = [p for p in sorted(labels_folder.iterdir())
+                       if p.is_file() and p.suffix.lower() in (".tif", ".tiff") and p.stem.endswith(EXISTING_LABEL_SUFFIX)]
+        if len(label_files) != len(image_paths):
+            problems.append(
+                f"Image/label count mismatch: {len(image_paths)} image(s) but "
+                f"{len(label_files)} label file(s) named '<name>{EXISTING_LABEL_SUFFIX}.tif' in the labels folder.")
+        missing = [tiff_path.name for tiff_path in image_paths if self.label_path_for(tiff_path) is None]
+        if missing:
+            preview = ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
+            problems.append(
+                f"No matching label file (expected '<name>{EXISTING_LABEL_SUFFIX}.tif') for: {preview}")
+        return problems
+
+    def abort_on_label_problems(self, image_paths: List[Path]) -> bool:
+        """Log any labels-folder problems as warnings; return True if the run should be aborted."""
+        problems = self.validate_existing_labels(image_paths)
+        if not problems:
+            return False
+        for problem in problems:
+            LOGGER.warning("%s", problem)
+        LOGGER.warning("Aborting: fix the labels folder or untick 'Use existing label images'.")
+        return True
 
     def resolve_paths(self) -> tuple:
         """Return ``(mode, tiff_path_or_None, folder_or_None, out_dir)``."""
@@ -505,6 +564,38 @@ class FluoroFateApp:
                                 "colormap": colour_assignments[name]["napari"], "blending": "additive"})
         layer_specs.append({"kind": "labels_coloured", "data": masks_stack.astype(np.uint32),
                             "name": "cells/Cellpose masks", "base_colour": "slategray", "opacity": 0.15, "visible": False})
+        return {"brightfield": brightfield_stack, "fluorophore_stacks": fluorophore_stacks,
+                "fluorophore_names": fluorophore_names, "masks_stack": masks_stack}, layer_specs
+
+    def load_existing_masks_stage(self, tiff_path: Path, work_dir: Path) -> tuple:
+        """Skip Cellpose: load a user-supplied label stack and stage it as the segmentation output."""
+        label_path = self.label_path_for(tiff_path)
+        if label_path is None:
+            raise FileNotFoundError(
+                f"No label file found for {tiff_path.name} "
+                f"(expected '<name>{EXISTING_LABEL_SUFFIX}.tif' in the labels folder).")
+
+        self.set_progress(2, fmt="Loading image...")
+        brightfield_stack, fluorophore_stacks, fluorophore_names, threshold_of, brightfield_channel = self.load_image_split(tiff_path)
+        self.set_progress(40, fmt="Loading existing labels...")
+        masks_stack = tifffile.imread(str(label_path))
+        if masks_stack.shape != brightfield_stack.shape:
+            raise ValueError(
+                f"Label stack {label_path.name} shape {masks_stack.shape} does not match "
+                f"image (T, Y, X) {brightfield_stack.shape}.")
+        masks_path = work_dir / OUTPUT_MASKS
+        tifffile.imwrite(str(masks_path), masks_stack.astype(np.uint16))
+        self.set_progress(100, fmt="Labels loaded")
+        LOGGER.info("Loaded existing labels %s -> %s", label_path.name, masks_path.name)
+
+        layer_specs: List[dict] = [{"kind": "image", "data": brightfield_stack, "name": "raw/Brightfield",
+                                    "colormap": "gray", "blending": "translucent", "opacity": 0.7}]
+        colour_assignments = assign_colours(fluorophore_names)
+        for name, stack in fluorophore_stacks.items():
+            layer_specs.append({"kind": "image", "data": stack, "name": f"raw/{name}",
+                                "colormap": colour_assignments[name]["napari"], "blending": "additive"})
+        layer_specs.append({"kind": "labels_coloured", "data": masks_stack.astype(np.uint32),
+                            "name": "cells/Imported masks", "base_colour": "slategray", "opacity": 0.15, "visible": False})
         return {"brightfield": brightfield_stack, "fluorophore_stacks": fluorophore_stacks,
                 "fluorophore_names": fluorophore_names, "masks_stack": masks_stack}, layer_specs
 
@@ -780,11 +871,15 @@ class FluoroFateApp:
     def on_run_all_clicked(self) -> None:
         mode, tiff_path, folder, out_dir = self.resolve_paths()
         if mode == "single":
+            if self.using_existing_labels() and self.abort_on_label_problems([tiff_path]):
+                return
             self.run_full_pipeline(tiff_path, out_dir, render_in_viewer=True)
             return
         tiff_files = sorted(p for p in folder.iterdir() if p.suffix.lower() in (".tif", ".tiff") and p.is_file())
         if not tiff_files:
             LOGGER.warning("No .tif/.tiff files found in %s", folder)
+            return
+        if self.using_existing_labels() and self.abort_on_label_problems(tiff_files):
             return
         LOGGER.info("Batch: %d file(s) in %s", len(tiff_files), folder.name)
         batch_results: List[dict] = []
@@ -809,7 +904,10 @@ class FluoroFateApp:
     def run_full_pipeline(self, tiff_path: Path, out_dir: Path, *, render_in_viewer: bool) -> Optional[dict]:
         work_dir = self.begin_workdir(tiff_path, out_dir)
         try:
-            _seg_data, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
+            if self.using_existing_labels():
+                _seg_data, seg_specs = self.load_existing_masks_stage(tiff_path, work_dir)
+            else:
+                _seg_data, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
             _track_data, track_specs = self.run_stage_tracking(tiff_path, work_dir)
             summary_record, analysis_specs = self.run_stage_analysis(tiff_path, work_dir)
             if render_in_viewer:

@@ -97,6 +97,18 @@ To use a custom model in FluoroFate: in the **Parameters** panel, click the file
 
 ---
 
+## Using Existing Label Images
+
+Cellpose segmentation is the slowest stage of the pipeline. If you have already segmented your images (for example in the Cellpose GUI, or from a previous FluoroFate run), you can skip segmentation and go straight to tracking, fate assignment, and quantification.
+
+1. In the **Inputs** panel, tick **Use existing label images**. The Cellpose parameters are disabled and a **Labels folder** picker becomes available.
+2. Select the folder containing your label stacks. Each label stack must be a `(T, Y, X)` TIFF named after its image with a `_labels` suffix — for example `experiment_A.tif` → `experiment_A_labels.tif` (`.tiff` is also accepted).
+3. Run as usual (single image or batch folder).
+
+Before running, FluoroFate checks that every input image has a matching label file and that the number of label files matches the number of images. If there is a count mismatch or any image name does not have a corresponding `<name>_labels.tif`, a warning is logged and the run is aborted so nothing is processed against the wrong masks.
+
+---
+
 ## Graphical Interface
 
 The FluoroFate interface is organised into two configuration dock widgets (**Inputs** and **Parameters**) plus a **Run & Log** dock widget on the right side of the napari viewer. All parameters have sensible defaults and can be adjusted without writing any code.
@@ -109,6 +121,8 @@ The FluoroFate interface is organised into two configuration dock widgets (**Inp
 | Single TIFF | *(empty)* | Path to one multi-channel timelapse TIFF (used in Single image mode) |
 | Batch folder | *(empty)* | Folder of TIFFs (used in Folder mode) |
 | Output directory | *(empty)* | **Required.** Where results are saved (one subfolder per TIFF, named after the file) |
+| Use existing label images | False | Skip Cellpose segmentation and load pre-computed label stacks instead (see [Using Existing Label Images](#using-existing-label-images)) |
+| Labels folder | *(empty)* | Folder of label stacks (enabled only when *Use existing label images* is ticked). Each must be named `<image-name>_labels.tif` |
 | Brightfield channel | last channel | Channel index for brightfield. Defaults to the last channel the first time a TIFF is loaded; subsequent loads preserve your selection |
 | Fluorophore 1 name | Green | Label used in output columns and filenames |
 | Fluorophore 1 channel | 0 | Channel index for fluorophore 1 |
