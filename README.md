@@ -2,7 +2,7 @@
 
 **A graphical user interface for time-resolved single-cell analysis of fluorescent reporter dynamics in multi-channel timelapse microscopy data.**
 
-FluoroFate is a point-and-click desktop application that takes multi-channel timelapse TIFF images and performs automated cell segmentation, tracking, fluorescence thresholding, and temporal fate classification — all without requiring the user to write any code. The interface is built on [napari](https://napari.org/), providing interactive visualisation of every stage of the analysis so that results can be inspected and verified before export.
+FluoroFate is a point-and-click desktop application that takes multi-channel timelapse or static TIFF images and performs automated cell segmentation, fluorescence thresholding, and temporal fate classification — with tracking added for timelapses — all without requiring the user to write any code. The interface is built on [napari](https://napari.org/), providing interactive visualisation of every stage of the analysis so that results can be inspected and verified before export.
 
 The tool was developed to enable researchers without programming experience to perform rigorous, reproducible single-cell fluorescence quantification. It integrates established image analysis tools — [Cellpose](https://www.cellpose.org/) for segmentation and [TrackMate](https://imagej.net/plugins/trackmate/) for tracking — into a unified workflow with a consistent graphical interface, removing the need to move data between different software packages or write custom analysis scripts.
 
@@ -23,6 +23,8 @@ Brightfield images are segmented frame-by-frame using Cellpose. Cell diameter is
 ### Stage 2: Cell Tracking
 
 Segmented objects are linked across time using TrackMate, which is run headlessly through PyImageJ — there is no need to open FIJI or interact with Java directly. Cell tracks are linked using the Cellpose-identified cell masks and the Advanced Kalman Tracker. Configurable tracking parameters include the initial linking radius, Kalman search radius, and maximum frame gap (the number of frames a cell can disappear before its track is closed). Optional track splitting can be enabled to support lineage-aware analyses, in which mother-daughter relationships are inferred from TrackMate's edge structure and converted into hierarchical lineage identifiers. A relabelled stack with consistent cell identities across time is generated from the segmentation masks and TrackMate output.
+
+For a single-frame image there is nothing to link across time, so TrackMate and Java initialisation are skipped automatically. The Cellpose labels are passed directly to fluorescence analysis, and tracking/lineage fields in the per-cell output are left blank.
 
 ### Stage 3: Fluorescence Thresholding and Fate Assignment
 
@@ -75,7 +77,7 @@ With `fluorofate.ipynb` open and the `fluorofate` kernel selected, click the **R
 
 ### Input Data Format
 
-FluoroFate accepts **4-D TIFF** files with shape `(T, C, Y, X)` — time, channels, height, width. At least one brightfield channel and one fluorescence channel are required. Supported file extensions: `.tif`, `.tiff`.
+FluoroFate accepts either **4-D timelapse TIFFs** with shape `(T, C, Y, X)` or **3-D static multichannel TIFFs** with shape `(C, Y, X)`. A 4-D TIFF with `T=1` is also treated as a static image. At least one brightfield channel and one fluorescence channel are required. Supported file extensions: `.tif`, `.tiff`.
 
 ---
 
@@ -102,7 +104,7 @@ To use a custom model in FluoroFate: in the **Parameters** panel, click the file
 Cellpose segmentation is the slowest stage of the pipeline. If you have already segmented your images (for example in the Cellpose GUI, or from a previous FluoroFate run), you can skip segmentation and go straight to tracking, fate assignment, and quantification.
 
 1. In the **Inputs** panel, tick **Use existing label images**. The Cellpose parameters are disabled and a **Labels folder** picker becomes available.
-2. Select the folder containing your label stacks. Each label stack must be a `(T, Y, X)` TIFF named after its image with a `_labels` suffix — for example `experiment_A.tif` → `experiment_A_labels.tif` (`.tiff` is also accepted).
+2. Select the folder containing your label stacks. Each label stack must be a `(T, Y, X)` TIFF for a timelapse or `(Y, X)` TIFF for a static image, named after its image with a `_labels` suffix — for example `experiment_A.tif` → `experiment_A_labels.tif` (`.tiff` is also accepted).
 3. Run as usual (single image or batch folder).
 
 Before running, FluoroFate checks that every input image has a matching label file and that the number of label files matches the number of images. If there is a count mismatch or any image name does not have a corresponding `<name>_labels.tif`, a warning is logged and the run is aborted so nothing is processed against the wrong masks.
@@ -153,7 +155,7 @@ The FluoroFate interface is organised into two configuration dock widgets (**Inp
 
 | Button | Function |
 |---|---|
-| **Run All** | Single image: full pipeline (segmentation → tracking → analysis). Folder: batch every TIFF and write `batch_summary.csv` |
+| **Run All** | Single image: full pipeline; tracking is automatically skipped when the image has one frame. Folder: batch every TIFF and write `batch_summary.csv` |
 | **Threshold & Analyse Again** | Re-runs only the thresholding + fate-assignment stage on the last successfully processed image, using the current fluorophore threshold-method selections. Greyed out until **Run All** has completed at least once. Lets you iterate on threshold choices without re-running Cellpose / TrackMate. |
 | **Clear log** | Empties the in-GUI log panel (the `run.log` file on disk is preserved) |
 
@@ -208,8 +210,9 @@ All per-image outputs are saved in a per-image subfolder (named after the TIFF s
 | File | Description |
 |---|---|
 | `masks_stack.tiff` | Cellpose segmentation masks (T, Y, X), uint16 |
-| `linked_labels_trackmate.tiff` | Tracked label stack with consistent cell IDs across frames |
-| `trackmate_tracks.csv` | TrackMate spot-level output (intermediate; required for staged Tracking → Analysis runs) |
+| `linked_labels_trackmate.tiff` | Labels used for analysis: TrackMate-linked for timelapses, or the Cellpose labels directly for a single frame |
+| `trackmate_tracks.csv` | TrackMate spot-level output for timelapses (not created for single-frame inputs) |
+| `tracking_skipped_single_frame.json` | Present only for single-frame inputs; records that TrackMate was intentionally skipped |
 
 ### Per-Cell, Per-Frame Output
 
@@ -229,7 +232,7 @@ Columns (in order):
 
 ### Plot Outputs
 
-For each plot type below, FluoroFate writes one "all cells" PDF plus three frame-presence-filtered variants restricted to cells appearing in at least 40%, 60% and 80% of frames (suffixes `_min40pct.pdf`, `_min60pct.pdf`, `_min80pct.pdf`). The filtered variants exclude cells that are tracked for only a small fraction of the timelapse, which are often segmentation artefacts or cells entering/leaving the field of view.
+For each plot type below, FluoroFate writes one "all cells" PDF plus three frame-presence-filtered variants restricted to cells appearing in at least 40%, 60% and 80% of frames (suffixes `_min40pct.pdf`, `_min60pct.pdf`, `_min80pct.pdf`). The filtered variants exclude cells that are tracked for only a small fraction of the timelapse, which are often segmentation artefacts or cells entering/leaving the field of view. The two percentage plots (`percentages_persistent` and `percentages_snapshot`, including their filtered variants) are each accompanied by a matching `.csv` holding the plotted values.
 
 | File (all cells) | Filtered variants | Description |
 |---|---|---|

@@ -19,6 +19,8 @@ from cellpose import io, models
 from skimage.filters import gaussian, threshold_mean, threshold_minimum, threshold_otsu, threshold_triangle, threshold_yen
 from skimage.measure import label
 
+from utils import ensure_frame_axis
+
 LOGGER = logging.getLogger(__name__)
 
 THRESHOLD_FUNCTIONS = {"mean": threshold_mean, "minimum": threshold_minimum, "yen": threshold_yen, "otsu": threshold_otsu, "triangle": threshold_triangle}
@@ -67,8 +69,7 @@ def cellpose_live_segmentation(brightfield_stack, diameter=None, flow_threshold=
     """
     if isinstance(brightfield_stack, (str, Path)):
         brightfield_stack = io.imread(brightfield_stack)
-    if brightfield_stack.ndim == 2:
-        brightfield_stack = brightfield_stack[np.newaxis, :, :]
+    brightfield_stack = ensure_frame_axis(brightfield_stack)
 
     if custom_model_path:
         LOGGER.info("Cellpose: loading custom model from %s", custom_model_path)

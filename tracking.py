@@ -18,6 +18,8 @@ label 0 is reserved for background in label images.
 """
 
 import logging
+import os
+import platform
 from collections import defaultdict
 from pathlib import Path
 
@@ -181,13 +183,38 @@ def generate_trackmate_labels(masks_path, output_directory, target_channel=1, si
         Keys: ``"imagej_instance"``, ``"trackmate_tracks_df"``,
         ``"linked_labels"``, ``"linked_labels_path"``, ``"tracks_csv"``.
     """
-    import imagej as imagej_module
     import scyjava as scyjava_module
+
+    # Apple Silicon: the Maven Fiji build hits a Jogl native-dependency issue and its bundled
+    # TrackMate is compiled for Java 21, so use a local Fiji install on Java 21 there. Every
+    # other platform keeps the original cross-platform Maven Fiji route unchanged.
+    use_local_fiji = platform.system() == "Darwin" and platform.machine() == "arm64"
+    if use_local_fiji:
+        java_home = configure_java_home()
+        if java_home:
+            os.environ["JAVA_HOME"] = str(java_home)
+            os.environ["PATH"] = str(Path(java_home) / "bin") + os.pathsep + os.environ.get("PATH", "")
+        scyjava_module.config.set_java_constraints(fetch=True, vendor="zulu", version="21")
+
+    import imagej as imagej_module
     from imagej import Mode as ImageJMode
 
     if imagej_instance is None:
-        configure_java_home()
-        imagej_instance = imagej_module.init("sc.fiji:fiji", mode=ImageJMode.HEADLESS, add_legacy=True)
+        if use_local_fiji:
+            fiji_path = os.environ.get("FLUOROFATE_FIJI_PATH", "/Applications/Fiji")
+            LOGGER.info("TrackMate: initialising local Fiji from %s", fiji_path)
+            imagej_instance = imagej_module.init(fiji_path, mode=ImageJMode.HEADLESS, add_legacy=True)
+        else:
+            configure_java_home()
+            imagej_instance = imagej_module.init("sc.fiji:fiji", mode=ImageJMode.HEADLESS, add_legacy=True)
+
+    if use_local_fiji:
+        java_version = str(scyjava_module.jimport("java.lang.System").getProperty("java.version"))
+        LOGGER.info("TrackMate: JVM java.version = %s", java_version)
+        if not java_version.startswith("21"):
+            raise RuntimeError(
+                "TrackMate requires Java 21 on Apple Silicon because the Fiji TrackMate build is "
+                f"compiled for Java 21. Current JVM is Java {java_version}.")
 
     IJ = scyjava_module.jimport("ij.IJ")
     HashMap = scyjava_module.jimport("java.util.HashMap")

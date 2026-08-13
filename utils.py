@@ -5,7 +5,39 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
+
 LOGGER = logging.getLogger(__name__)
+
+
+def normalise_tiff_to_tcyx(image):
+    """Return an image as ``(T, C, Y, X)`` and flag static inputs.
+
+    FluoroFate accepts time-lapses stored as ``(T, C, Y, X)`` and static
+    multichannel images stored as ``(C, Y, X)``. A singleton time axis is
+    added to static images so the rest of the pipeline can treat every input
+    as a stack. Returns ``(normalised_image, is_single_frame)``.
+    """
+    image = np.asarray(image)
+    if image.ndim == 3:
+        image = image[np.newaxis, ...]
+    elif image.ndim != 4:
+        raise ValueError(
+            "Expected TIFF shaped (T, C, Y, X) or static (C, Y, X), "
+            f"got {image.ndim}-D shape {image.shape}.")
+    return image, image.shape[0] == 1
+
+
+def ensure_frame_axis(array):
+    """Promote a 2-D ``(Y, X)`` array to a single-frame ``(1, Y, X)`` stack.
+
+    Arrays that already have a leading frame (or other) axis are returned
+    unchanged, so callers can treat static and stacked inputs uniformly.
+    """
+    array = np.asarray(array)
+    if array.ndim == 2:
+        return array[np.newaxis, ...]
+    return array
 
 
 def running_in_notebook():

@@ -37,7 +37,7 @@ from magicgui.widgets import TextEdit
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QApplication, QHBoxLayout, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
-from utils import running_in_notebook
+from utils import ensure_frame_axis, normalise_tiff_to_tcyx, running_in_notebook
 from colours import assign_colours, get_fluor_base_colour, add_coloured_labels
 from measurement import compute_cell_positivity, compute_per_cell_intensity_area
 from segmentation import cellpose_live_segmentation, segment_fluorescence
@@ -70,7 +70,9 @@ OUTPUT_LINKED = "linked_labels_trackmate.tiff"
 OUTPUT_TRACKS = "trackmate_tracks.csv"
 OUTPUT_PER_FRAME_CELLS = "per_frame_cells.csv"
 OUTPUT_PCT_PERSISTENT_PDF = "percentages_persistent.pdf"
+OUTPUT_PCT_PERSISTENT_CSV = "percentages_persistent.csv"
 OUTPUT_PCT_SNAPSHOT_PDF = "percentages_snapshot.pdf"
+OUTPUT_PCT_SNAPSHOT_CSV = "percentages_snapshot.csv"
 OUTPUT_SNAPSHOT_TRAJECTORIES = "snapshot_trajectories.pdf"
 OUTPUT_SNAPSHOT_TIMELINES = "snapshot_timelines.pdf"
 # Filtered variants: cells appearing in >= N % of frames. Same plot panels as the
@@ -79,22 +81,28 @@ FRAME_PRESENCE_THRESHOLDS_PCT = (40, 60, 80)
 OUTPUT_RUN_CONFIG = "run_config.json"
 OUTPUT_RUN_LOG = "run.log"
 OUTPUT_BATCH_SUMMARY = "batch_summary.csv"
+OUTPUT_TRACKING_SKIPPED = "tracking_skipped_single_frame.json"
 
 OUTPUT_DESCRIPTIONS: Dict[str, str] = {
     OUTPUT_MASKS: "Cellpose segmentation masks (uint16).",
-    OUTPUT_LINKED: "TrackMate-linked labels (cell ID stable across frames).",
-    OUTPUT_TRACKS: "TrackMate spot-level output (intermediate; required for staged Tracking \u2192 Analysis runs).",
+    OUTPUT_LINKED: "Labels used for analysis: TrackMate-linked for time-lapses, or direct Cellpose labels for a single frame.",
+    OUTPUT_TRACKS: "TrackMate spot-level output for time-lapses (not created for single-frame inputs).",
     OUTPUT_PER_FRAME_CELLS: "Per-cell, per-frame analysis output: cell area, raw fluorescence sums, thresholded positive areas, persistent fate flags, snapshot positivity flags, and lineage columns.",
     OUTPUT_PCT_PERSISTENT_PDF: "Cumulative % positive over time (persistent mode, all cells).",
+    OUTPUT_PCT_PERSISTENT_CSV: "Data used to plot cumulative % positive over time (persistent mode, all cells).",
     OUTPUT_PCT_SNAPSHOT_PDF: "Per-frame category % (snapshot mode, all cells).",
+    OUTPUT_PCT_SNAPSHOT_CSV: "Data used to plot per-frame category % (snapshot mode, all cells).",
     OUTPUT_SNAPSHOT_TRAJECTORIES: "XY trajectories coloured by snapshot category (all cells).",
     OUTPUT_SNAPSHOT_TIMELINES: "Per-cell horizontal-bar timeline coloured by category (all cells).",
     **{f"percentages_persistent_min{p}pct.pdf": f"Persistent-mode cumulative % positive — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
+    **{f"percentages_persistent_min{p}pct.csv": f"Data used to plot persistent-mode cumulative % positive — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     **{f"percentages_snapshot_min{p}pct.pdf": f"Snapshot-mode per-frame % — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
+    **{f"percentages_snapshot_min{p}pct.csv": f"Data used to plot snapshot-mode per-frame % — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     **{f"snapshot_trajectories_min{p}pct.pdf": f"Snapshot XY trajectories — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     **{f"snapshot_timelines_min{p}pct.pdf": f"Snapshot per-cell timelines — cells appearing in \u2265{p}% of frames only." for p in FRAME_PRESENCE_THRESHOLDS_PCT},
     OUTPUT_RUN_CONFIG: "All parameters used for this run (full provenance).",
     OUTPUT_RUN_LOG: "Full log for this run.",
+    OUTPUT_TRACKING_SKIPPED: "Marker recording that TrackMate was intentionally skipped for a single-frame image.",
 }
 
 
@@ -444,13 +452,25 @@ class FluoroFateApp:
             raise ValueError(f"Brightfield channel {brightfield_channel} is out of range (image has {num_channels_in_image} channels).")
         return fluorophore_names, channel_of, brightfield_channel, threshold_of
 
-    def load_image_split(self, tiff_path: Path) -> tuple:
-        """Load (cached) 4-D TIFF and split into brightfield + fluorophore stacks."""
+    def load_image_tcyx(self, tiff_path: Path) -> np.ndarray:
+        """Load and cache a TIFF as (T, C, Y, X), promoting static (C, Y, X) images to one frame."""
         if tiff_path not in self.image_cache:
-            self.image_cache[tiff_path] = tifffile.imread(str(tiff_path))
-        image = self.image_cache[tiff_path]
-        if image.ndim != 4:
-            raise ValueError(f"Expected 4-D TIFF (T, C, Y, X), got {image.ndim}-D shape {image.shape}.")
+            raw_image = tifffile.imread(str(tiff_path))
+            image, is_single_frame = normalise_tiff_to_tcyx(raw_image)
+            self.image_cache[tiff_path] = image
+            if raw_image.ndim == 3:
+                LOGGER.info("Static multichannel TIFF %s (shape %s) detected; treating as one frame, TrackMate will be skipped.", tiff_path.name, raw_image.shape)
+            elif is_single_frame:
+                LOGGER.info("Single-frame TIFF %s detected; TrackMate will be skipped.", tiff_path.name)
+        return self.image_cache[tiff_path]
+
+    def image_is_single_frame(self, tiff_path: Path) -> bool:
+        """Return True when the input has one frame after shape normalisation."""
+        return self.load_image_tcyx(tiff_path).shape[0] == 1
+
+    def load_image_split(self, tiff_path: Path) -> tuple:
+        """Load a TIFF and split it into brightfield + fluorophore stacks."""
+        image = self.load_image_tcyx(tiff_path)
         num_channels = image.shape[1]
         fluorophore_names, channel_of, brightfield_channel, threshold_of = self.read_channel_config(num_channels)
         brightfield_stack = image[:, brightfield_channel, :, :]
@@ -460,6 +480,7 @@ class FluoroFateApp:
     def gather_run_config(self, tiff_path: Path, work_dir: Path, fluor_names: List[str],
                           channel_of: Dict[str, int], threshold_of: Dict[str, str], brightfield_channel: int) -> dict:
         custom_model = self.custom_model_is_selected()
+        is_single_frame = self.image_is_single_frame(tiff_path)
         try:
             git_output = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(Path(__file__).parent),
                                         capture_output=True, text=True, timeout=2)
@@ -486,7 +507,9 @@ class FluoroFateApp:
                          "diameter": CELLPOSE_DEFAULT_DIAMETER,
                          "flow_threshold": CELLPOSE_DEFAULT_FLOW_THRESHOLD,
                          "cellprob_threshold": CELLPOSE_DEFAULT_CELLPROB_THRESHOLD},
-            "trackmate": {"initial_search_radius": float(self.params_panel.initial_search_radius.value),
+            "trackmate": {"enabled": not is_single_frame,
+                          "skipped_reason": "single-frame input" if is_single_frame else None,
+                          "initial_search_radius": float(self.params_panel.initial_search_radius.value),
                           "search_radius": float(self.params_panel.search_radius.value),
                           "max_frame_gap": int(self.params_panel.max_frame_gap.value),
                           "allow_splitting": bool(self.params_panel.allow_splitting.value),
@@ -551,6 +574,7 @@ class FluoroFateApp:
             progress_callback=lambda current_frame, total_frames: self.set_progress(
                 5 + int(90 * current_frame / total_frames), fmt=f"Cellpose: {current_frame}/{total_frames}"),
         )
+        masks_stack = ensure_frame_axis(masks_stack)
         masks_path = work_dir / OUTPUT_MASKS
         tifffile.imwrite(str(masks_path), masks_stack.astype(np.uint16))
         self.set_progress(100, fmt="Segmentation saved")
@@ -579,6 +603,7 @@ class FluoroFateApp:
         brightfield_stack, fluorophore_stacks, fluorophore_names, threshold_of, brightfield_channel = self.load_image_split(tiff_path)
         self.set_progress(40, fmt="Loading existing labels...")
         masks_stack = tifffile.imread(str(label_path))
+        masks_stack = ensure_frame_axis(masks_stack)
         if masks_stack.shape != brightfield_stack.shape:
             raise ValueError(
                 f"Label stack {label_path.name} shape {masks_stack.shape} does not match "
@@ -603,6 +628,26 @@ class FluoroFateApp:
         masks_path = work_dir / OUTPUT_MASKS
         if not masks_path.exists():
             raise FileNotFoundError(f"Segmentation output missing: {masks_path}")
+        tracking_skipped_path = work_dir / OUTPUT_TRACKING_SKIPPED
+        if self.image_is_single_frame(tiff_path):
+            # One frame: nothing to link across time, so use the Cellpose labels directly.
+            masks_stack = tifffile.imread(str(masks_path)).astype(np.uint32)
+            masks_stack = ensure_frame_axis(masks_stack)
+            if masks_stack.ndim != 3 or masks_stack.shape[0] != 1:
+                raise ValueError(f"Single-frame segmentation must have shape (1, Y, X), got {masks_stack.shape}.")
+            linked_labels = masks_stack
+            tifffile.imwrite(str(work_dir / OUTPUT_LINKED), linked_labels)
+            tracking_skipped_path.write_text(
+                json.dumps({"reason": "single-frame input", "labels_source": OUTPUT_MASKS, "trackmate_started": False}, indent=2),
+                encoding="utf-8")
+            tracks_dataframe = pd.DataFrame(columns=["track_id", "t", "y", "x", "quality"])
+            self.set_progress(100, fmt="TrackMate skipped (single frame)")
+            LOGGER.info("Single-frame input: skipped TrackMate and passed Cellpose labels directly to analysis.")
+            layer_specs: List[dict] = [{"kind": "labels_coloured", "data": linked_labels,
+                                        "name": "cells/Static analysis labels", "base_colour": "gold", "opacity": 0.20}]
+            return {"tracks_df": tracks_dataframe, "linked_labels": linked_labels, "tracking_skipped": True}, layer_specs
+
+        tracking_skipped_path.unlink(missing_ok=True)
         if not bool(self.params_panel.allow_splitting.value):
             LOGGER.warning("TrackMate splitting is disabled — mother/daughter lineage will not be inferred.")
 
@@ -649,14 +694,16 @@ class FluoroFateApp:
         brightfield_stack, fluorophore_stacks, fluorophore_names, threshold_of, brightfield_channel = self.load_image_split(tiff_path)
         channel_of = {name: int(getattr(self.inputs_panel, f"fluor_{i + 1}_channel").value) for i, name in enumerate(fluorophore_names)}
         linked_labels = tifffile.imread(str(linked_labels_path)).astype(np.uint32)
+        linked_labels = ensure_frame_axis(linked_labels)
         num_frames = linked_labels.shape[0]
         file_stem = tiff_path.stem
+        tracking_was_skipped = (work_dir / OUTPUT_TRACKING_SKIPPED).exists()
 
         run_config = self.gather_run_config(tiff_path, work_dir, fluorophore_names, channel_of, threshold_of, brightfield_channel)
         (work_dir / OUTPUT_RUN_CONFIG).write_text(json.dumps(run_config, indent=2, default=str), encoding="utf-8")
 
         tracks_csv_path = work_dir / OUTPUT_TRACKS
-        if tracks_csv_path.exists():
+        if tracks_csv_path.exists() and not tracking_was_skipped:
             tracks_dataframe = pd.read_csv(tracks_csv_path)
         else:
             tracks_dataframe = pd.DataFrame(columns=["track_id", "t", "y", "x", "quality"])
@@ -681,6 +728,7 @@ class FluoroFateApp:
         persistent_fates_df, locked_labels, _persistent_per_frame = assign_persistent_fates(linked_labels, frame_cell_positive_area)
         persistent_fates_df = persistent_fates_df.sort_values("label_id").reset_index(drop=True)
         persistent_summary_df = compute_persistent_percentages(persistent_fates_df, num_frames, fluorophore_names)
+        persistent_summary_df.to_csv(work_dir / OUTPUT_PCT_PERSISTENT_CSV, index=False)
         persistent_figure, _ = plot_persistent_percentages(persistent_summary_df, fluorophore_names, title=file_stem)
         persistent_figure.savefig(str(work_dir / OUTPUT_PCT_PERSISTENT_PDF), bbox_inches="tight")
         plt.close(persistent_figure)
@@ -690,6 +738,7 @@ class FluoroFateApp:
         self.set_progress(75, fmt="Snapshot fate assignment...")
         snapshot_df = assign_snapshot_fates(linked_labels, frame_cell_positive_area).sort_values(["label_id", "frame"]).reset_index(drop=True)
         snapshot_summary_df, snapshot_categories = compute_snapshot_percentages(snapshot_df, num_frames)
+        snapshot_summary_df.to_csv(work_dir / OUTPUT_PCT_SNAPSHOT_CSV, index=False)
         snapshot_figure, _ = plot_snapshot_percentages(snapshot_summary_df, snapshot_categories, title=file_stem)
         snapshot_figure.savefig(str(work_dir / OUTPUT_PCT_SNAPSHOT_PDF), bbox_inches="tight")
         plt.close(snapshot_figure)
@@ -701,7 +750,7 @@ class FluoroFateApp:
         plt.close(timeline_figure)
         LOGGER.info("Snapshot categories: %s", sorted(snapshot_df["category"].unique()))
 
-        # ---- Frame-presence-filtered plot variants (figures only; no CSVs) ----
+        # ---- Frame-presence-filtered plot variants (figures + matching CSVs) ----
         for min_pct in FRAME_PRESENCE_THRESHOLDS_PCT:
             suffix = f"min{min_pct}pct"
             label = f"\u2265{min_pct}% of frames"
@@ -713,6 +762,7 @@ class FluoroFateApp:
                 persistent_summary_filtered = compute_persistent_percentages(
                     persistent_filtered, num_frames, fluorophore_names
                 )
+                persistent_summary_filtered.to_csv(work_dir / f"percentages_persistent_{suffix}.csv", index=False)
                 figure, _ = plot_persistent_percentages(
                     persistent_summary_filtered, fluorophore_names,
                     title=f"{file_stem} — persistent ({label}, n={len(persistent_filtered)})",
@@ -729,6 +779,7 @@ class FluoroFateApp:
                 snapshot_summary_filtered, snapshot_categories_filtered = compute_snapshot_percentages(
                     snapshot_filtered, num_frames
                 )
+                snapshot_summary_filtered.to_csv(work_dir / f"percentages_snapshot_{suffix}.csv", index=False)
                 figure, _ = plot_snapshot_percentages(
                     snapshot_summary_filtered, snapshot_categories_filtered,
                     title=f"{file_stem} — snapshot ({label}, n={snapshot_filtered['label_id'].nunique()})",
@@ -767,7 +818,10 @@ class FluoroFateApp:
             )
             per_frame_cells_df[f"{name} Threshold Method"] = str(threshold_of[name])
         # Merge lineage info (track_id, lineage_id, parent_track_id, generation)
-        per_frame_cells_df["track_id"] = per_frame_cells_df["cell_id"].astype(int) - 1
+        if tracking_was_skipped:
+            per_frame_cells_df["track_id"] = pd.Series(pd.NA, index=per_frame_cells_df.index, dtype="Int64")
+        else:
+            per_frame_cells_df["track_id"] = per_frame_cells_df["cell_id"].astype(int) - 1
         if len(lineage_lookup) > 0:
             per_frame_cells_df = per_frame_cells_df.merge(lineage_lookup, on="track_id", how="left")
         else:
@@ -802,6 +856,8 @@ class FluoroFateApp:
         # ---- Summary record ----
         summary_record: Dict[str, Any] = {
             "filename": tiff_path.name, "n_frames": num_frames,
+            "tracking_skipped": tracking_was_skipped,
+            "n_segmented_cells": int(len(persistent_fates_df)),
             "n_tracked_cells": int(tracks_dataframe["track_id"].nunique()) if len(tracks_dataframe) > 0 else 0,
             "n_negative_persistent": int((persistent_fates_df["fate"] == "negative").sum()),
             "final_total_pct_persistent": float(persistent_summary_df["total_positive_pct"].iloc[-1]),
@@ -901,14 +957,83 @@ class FluoroFateApp:
         pd.DataFrame(self.results).to_csv(summary_path, index=False)
         LOGGER.info("Batch complete. Summary -> %s", summary_path)
 
+    def stage_status(self, work_dir: Path) -> str:
+        """Return the latest completed pipeline stage in a work dir so interrupted runs can resume.
+
+        The check is file-based: a stage counts as done only when the outputs the next stage
+        needs already exist. Returns one of "none", "segmentation", "tracking", "analysis".
+        """
+        masks_done = (work_dir / OUTPUT_MASKS).exists()
+        tracking_done = (work_dir / OUTPUT_LINKED).exists() and (
+            (work_dir / OUTPUT_TRACKS).exists() or (work_dir / OUTPUT_TRACKING_SKIPPED).exists()
+        )
+        analysis_done = (
+            tracking_done
+            and (work_dir / OUTPUT_PER_FRAME_CELLS).exists()
+            and (work_dir / OUTPUT_PCT_PERSISTENT_PDF).exists()
+            and (work_dir / OUTPUT_PCT_SNAPSHOT_PDF).exists()
+        )
+        if analysis_done:
+            return "analysis"
+        if tracking_done:
+            return "tracking"
+        if masks_done:
+            return "segmentation"
+        return "none"
+
+    def load_existing_segmentation_specs(self, tiff_path: Path, work_dir: Path) -> List[dict]:
+        """Build napari layers for an already-saved Cellpose mask stack (used when resuming)."""
+        brightfield_stack, fluorophore_stacks, fluorophore_names, _threshold_of, _brightfield_channel = self.load_image_split(tiff_path)
+        masks_stack = tifffile.imread(str(work_dir / OUTPUT_MASKS)).astype(np.uint32)
+        masks_stack = ensure_frame_axis(masks_stack)
+        layer_specs: List[dict] = [{"kind": "image", "data": brightfield_stack, "name": "raw/Brightfield",
+                                    "colormap": "gray", "blending": "translucent", "opacity": 0.7}]
+        colour_assignments = assign_colours(fluorophore_names)
+        for name, stack in fluorophore_stacks.items():
+            layer_specs.append({"kind": "image", "data": stack, "name": f"raw/{name}",
+                                "colormap": colour_assignments[name]["napari"], "blending": "additive"})
+        layer_specs.append({"kind": "labels_coloured", "data": masks_stack, "name": "cells/Cellpose masks",
+                            "base_colour": "slategray", "opacity": 0.15, "visible": False})
+        return layer_specs
+
+    def load_existing_tracking_specs(self, work_dir: Path) -> List[dict]:
+        """Build napari layers for already-saved linked labels + tracks (used when resuming)."""
+        linked_labels = tifffile.imread(str(work_dir / OUTPUT_LINKED)).astype(np.uint32)
+        linked_labels = ensure_frame_axis(linked_labels)
+        tracking_was_skipped = (work_dir / OUTPUT_TRACKING_SKIPPED).exists()
+        layer_name = "cells/Static analysis labels" if tracking_was_skipped else "cells/Linked labels"
+        layer_specs: List[dict] = [{"kind": "labels_coloured", "data": linked_labels, "name": layer_name,
+                                    "base_colour": "gold", "opacity": 0.20}]
+        tracks_path = work_dir / OUTPUT_TRACKS
+        if tracks_path.exists() and not tracking_was_skipped:
+            tracks_dataframe = pd.read_csv(tracks_path)
+            if len(tracks_dataframe) > 0:
+                tracks_array = tracks_dataframe[["track_id", "t", "y", "x"]].sort_values(["track_id", "t"]).to_numpy(dtype=float)
+                layer_specs.append({"kind": "tracks", "data": tracks_array, "name": "cells/Tracks",
+                                    "tail_length": 50, "opacity": 0.8})
+        return layer_specs
+
     def run_full_pipeline(self, tiff_path: Path, out_dir: Path, *, render_in_viewer: bool) -> Optional[dict]:
         work_dir = self.begin_workdir(tiff_path, out_dir)
         try:
             if self.using_existing_labels():
+                # User supplies masks: stage them fresh, then track (auto-skipped for a single frame) and analyse.
                 _seg_data, seg_specs = self.load_existing_masks_stage(tiff_path, work_dir)
+                _track_data, track_specs = self.run_stage_tracking(tiff_path, work_dir)
             else:
-                _seg_data, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
-            _track_data, track_specs = self.run_stage_tracking(tiff_path, work_dir)
+                # Resume from the latest completed stage so an interrupted run need not restart from Cellpose.
+                status = self.stage_status(work_dir)
+                LOGGER.info("Resume check: latest completed stage = %s", status)
+                if status == "none":
+                    _seg_data, seg_specs = self.run_stage_segmentation(tiff_path, work_dir)
+                else:
+                    LOGGER.info("Existing Cellpose masks found; skipping segmentation.")
+                    seg_specs = self.load_existing_segmentation_specs(tiff_path, work_dir)
+                if status in ("none", "segmentation"):
+                    _track_data, track_specs = self.run_stage_tracking(tiff_path, work_dir)
+                else:
+                    LOGGER.info("Existing tracking output found; skipping TrackMate.")
+                    track_specs = self.load_existing_tracking_specs(work_dir)
             summary_record, analysis_specs = self.run_stage_analysis(tiff_path, work_dir)
             if render_in_viewer:
                 self.show_in_viewer(seg_specs + track_specs + analysis_specs)
