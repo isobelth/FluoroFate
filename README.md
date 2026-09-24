@@ -53,6 +53,7 @@ Download and install [Visual Studio Code](https://code.visualstudio.com/) (VS Co
 3. Search for and install the **Jupyter** extension (published by Microsoft).
 
 ### 3. Download the Files
+
 - Download the files in this repo into a folder on your computer. Within VS code go to File -> Open Folder, and select the folder where you've saved everything.
 
 ### 4. Create the FluoroFate Environment
@@ -71,7 +72,7 @@ pip uninstall -y torch torchvision
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
-To check it's working, run the follwing command in the terminal
+To check it's working, run the following command in the terminal
 
 ```bash
 python -c "import torch; print(torch.cuda.is_available())"
