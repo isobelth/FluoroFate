@@ -38,32 +38,46 @@ Each tracked cell is then classified using two complementary analysis modes (bot
 
 ## Installation (No Coding Required)
 
-> **For experienced Python users:** create the conda environment from `fluorofate_environment.yml`, activate it, and run `fluorofate.ipynb` or `python fluorofate.py` in your preferred editor. The detailed instructions below are for users who have not done this before.
-
-FluoroFate has been designed so that users with no prior coding experience can install and run it by following the steps below. All dependencies are handled automatically by the provided environment file — there is nothing to configure manually.
+FluoroFate has been designed so that users with no prior coding experience can install and run it by following the steps below.
 
 ### 1. Install Miniconda
 
-Download and install [Miniconda](https://docs.conda.io/en/latest/miniconda.html). This is a lightweight package manager that will handle all of FluoroFate's software dependencies. Run the installer and accept the default settings. Once installed, you should be able to open **Anaconda Prompt** from the Start menu (Windows) or run `conda` in any terminal (Mac/Linux).
+Download and install [Miniconda](https://docs.conda.io/en/latest/miniconda.html). This is a lightweight package manager that will handle all of FluoroFate's software dependencies. Run the installer and accept the default settings.
 
 ### 2. Install Visual Studio Code
 
 Download and install [Visual Studio Code](https://code.visualstudio.com/) (VS Code). This is a free code editor that can run Jupyter notebooks — which is how FluoroFate is launched. Once VS Code is open:
 
-1. Open the **Extensions** panel (the square icon on the left sidebar, or press `Ctrl+Shift+X`).
+1. Open the **Extensions** panel (the square icon on the left sidebar).
 2. Search for and install the **Python** extension (published by Microsoft).
 3. Search for and install the **Jupyter** extension (published by Microsoft).
 
-### 3. Create the FluoroFate Environment
+### 3. Download the Files
+- Download the files in this repo into a folder on your computer. Within VS code go to File -> Open Folder, and select the folder where you've saved everything.
 
-Open a terminal inside VS Code (**Terminal → New Terminal**, or press `` Ctrl+` ``). Navigate to the folder containing this README and run:
+### 4. Create the FluoroFate Environment
+
+Open a terminal inside VS Code (**Terminal → New Terminal**). Make sure that "command prompt" is selected, then type the following and hit enter:
 
 ```bash
-cd path/to/FluoroFate
 conda env create -f fluorofate_environment.yml
 ```
 
-Replace `path/to/FluoroFate` with the actual path on your computer. This command installs Python, napari, Cellpose, PyImageJ, Java, and all required scientific libraries into a self-contained environment called `fluorofate`. This step only needs to be performed once.
+This command installs everything you need to run the code so you can skip the next step. However, if you have a GPU, you can install it to the environment with the following commands. This will make your code (especially the segmentation step) much faster to run!
+
+```bash
+conda activate fluorofate
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
+
+To check it's working, run the follwing command in the terminal
+
+```bash
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+If it prints True, GPU acceleration is enabled.
 
 ### 4. Select the Environment in VS Code
 
@@ -117,47 +131,47 @@ The FluoroFate interface is organised into two configuration dock widgets (**Inp
 
 ### Inputs Panel
 
-| Parameter | Default | Description |
-|---|---|---|
-| Input mode | Single image | `Single image` runs on one TIFF; `Folder of images` batches every TIFF in a folder |
-| Single TIFF | *(empty)* | Path to one multi-channel timelapse TIFF (used in Single image mode) |
-| Batch folder | *(empty)* | Folder of TIFFs (used in Folder mode) |
-| Output directory | *(empty)* | **Required.** Where results are saved (one subfolder per TIFF, named after the file) |
-| Use existing label images | False | Skip Cellpose segmentation and load pre-computed label stacks instead (see [Using Existing Label Images](#using-existing-label-images)) |
-| Labels folder | *(empty)* | Folder of label stacks (enabled only when *Use existing label images* is ticked). Each must be named `<image-name>_labels.tif` |
-| Brightfield channel | last channel | Channel index for brightfield. Defaults to the last channel the first time a TIFF is loaded; subsequent loads preserve your selection |
-| Fluorophore 1 name | Green | Label used in output columns and filenames |
-| Fluorophore 1 channel | 0 | Channel index for fluorophore 1 |
-| Fluorophore 1 threshold | otsu | Thresholding method for fluorophore 1 (see [Thresholding Methods](#thresholding-methods)) |
-| Fluorophore 2 name | *(blank)* | Leave blank to analyse only one fluorescence channel |
-| Fluorophore 2 channel | 0 | Channel index for fluorophore 2 |
-| Fluorophore 2 threshold | otsu | Thresholding method for fluorophore 2 |
-| Fluorophore 3 name | *(blank)* | Leave blank to analyse fewer than three fluorescence channels |
-| Fluorophore 3 channel | 0 | Channel index for fluorophore 3 |
-| Fluorophore 3 threshold | otsu | Thresholding method for fluorophore 3 |
+| Parameter                 | Default      | Description                                                                                                                           |
+| ------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Input mode                | Single image | `Single image` runs on one TIFF; `Folder of images` batches every TIFF in a folder                                                |
+| Single TIFF               | *(empty)*  | Path to one multi-channel timelapse TIFF (used in Single image mode)                                                                  |
+| Batch folder              | *(empty)*  | Folder of TIFFs (used in Folder mode)                                                                                                 |
+| Output directory          | *(empty)*  | **Required.** Where results are saved (one subfolder per TIFF, named after the file)                                            |
+| Use existing label images | False        | Skip Cellpose segmentation and load pre-computed label stacks instead (see[Using Existing Label Images](#using-existing-label-images)) |
+| Labels folder             | *(empty)*  | Folder of label stacks (enabled only when*Use existing label images* is ticked). Each must be named `<image-name>_labels.tif`     |
+| Brightfield channel       | last channel | Channel index for brightfield. Defaults to the last channel the first time a TIFF is loaded; subsequent loads preserve your selection |
+| Fluorophore 1 name        | Green        | Label used in output columns and filenames                                                                                            |
+| Fluorophore 1 channel     | 0            | Channel index for fluorophore 1                                                                                                       |
+| Fluorophore 1 threshold   | otsu         | Thresholding method for fluorophore 1 (see[Thresholding Methods](#thresholding-methods))                                               |
+| Fluorophore 2 name        | *(blank)*  | Leave blank to analyse only one fluorescence channel                                                                                  |
+| Fluorophore 2 channel     | 0            | Channel index for fluorophore 2                                                                                                       |
+| Fluorophore 2 threshold   | otsu         | Thresholding method for fluorophore 2                                                                                                 |
+| Fluorophore 3 name        | *(blank)*  | Leave blank to analyse fewer than three fluorescence channels                                                                         |
+| Fluorophore 3 channel     | 0            | Channel index for fluorophore 3                                                                                                       |
+| Fluorophore 3 threshold   | otsu         | Thresholding method for fluorophore 3                                                                                                 |
 
 > Channel-index dropdowns are auto-populated from the selected TIFF (or the first TIFF in the selected batch folder). Between one and three fluorescence channels are supported — leave the fluorophore 2 and/or 3 name fields blank to skip them.
 
 ### Parameters Panel
 
-| Parameter | Default | Description |
-|---|---|---|
-| Cellpose model | cpsam | Built-in Cellpose model (disabled when a custom model file is selected) |
-| Custom model (optional) | *(empty)* | Optional `.pt`/`.pth` Cellpose model; overrides the built-in model |
-| Min cell size (px) | 15 | Minimum object area in pixels |
-| Use GPU | True | Enable GPU acceleration for Cellpose |
-| TM init search radius | 30.0 | TrackMate initial linking distance (pixels) |
-| TM search radius | 150.0 | TrackMate Kalman search radius (pixels) |
-| TM max frame gap | 2 | Maximum frames a cell can be absent before the track is terminated |
-| TM allow splitting | True | Enable detection of cell division events (required for lineage inference) |
+| Parameter               | Default     | Description                                                               |
+| ----------------------- | ----------- | ------------------------------------------------------------------------- |
+| Cellpose model          | cpsam       | Built-in Cellpose model (disabled when a custom model file is selected)   |
+| Custom model (optional) | *(empty)* | Optional`.pt`/`.pth` Cellpose model; overrides the built-in model     |
+| Min cell size (px)      | 15          | Minimum object area in pixels                                             |
+| Use GPU                 | True        | Enable GPU acceleration for Cellpose                                      |
+| TM init search radius   | 30.0        | TrackMate initial linking distance (pixels)                               |
+| TM search radius        | 150.0       | TrackMate Kalman search radius (pixels)                                   |
+| TM max frame gap        | 2           | Maximum frames a cell can be absent before the track is terminated        |
+| TM allow splitting      | True        | Enable detection of cell division events (required for lineage inference) |
 
 ### Run & Log Panel
 
-| Button | Function |
-|---|---|
-| **Run All** | Single image: full pipeline; tracking is automatically skipped when the image has one frame. Folder: batch every TIFF and write `batch_summary.csv` |
-| **Threshold & Analyse Again** | Re-runs only the thresholding + fate-assignment stage on the last successfully processed image, using the current fluorophore threshold-method selections. Greyed out until **Run All** has completed at least once. Lets you iterate on threshold choices without re-running Cellpose / TrackMate. |
-| **Clear log** | Empties the in-GUI log panel (the `run.log` file on disk is preserved) |
+| Button                              | Function                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Run All**                   | Single image: full pipeline; tracking is automatically skipped when the image has one frame. Folder: batch every TIFF and write`batch_summary.csv`                                                                                                                                                     |
+| **Threshold & Analyse Again** | Re-runs only the thresholding + fate-assignment stage on the last successfully processed image, using the current fluorophore threshold-method selections. Greyed out until**Run All** has completed at least once. Lets you iterate on threshold choices without re-running Cellpose / TrackMate. |
+| **Clear log**                 | Empties the in-GUI log panel (the`run.log` file on disk is preserved)                                                                                                                                                                                                                                  |
 
 The progress bar and the live log are below the button. Each run also appends to `run.log` in the per-image output folder.
 
@@ -172,6 +186,7 @@ FluoroFate **always runs both** of the following analysis modes when the analysi
 In persistent mode, each tracked cell is assigned a permanent fate according to the first fluorophore signal detected during the timelapse. Cells are defined by the first colour that they become positive for, regardless of fluorescence intensities at later time points. For each fluorophore, the first positive frame and total positive area across the track are recorded.
 
 This mode is appropriate when the order of fluorescence appearance determines the biological outcome. For example, in cell-death assays:
+
 - A cell that becomes Annexin V-positive first → **apoptosis**
 - A cell that becomes PI-positive first (without prior Annexin V positivity) → **necroptosis**
 
@@ -189,13 +204,13 @@ This mode is appropriate for analyses in which cell states change dynamically ov
 
 Each fluorophore channel can use a different global thresholding method, selected in the Inputs panel. A light Gaussian blur is applied before thresholding to reduce noise.
 
-| Method | Description |
-|---|---|
-| **mean** | Pixels above the image mean intensity are classified as positive |
-| **otsu** | Otsu's method; minimises intra-class variance (suitable for bimodal intensity distributions) |
-| **yen** | Yen's method; maximises correlation between original and thresholded images |
-| **triangle** | Triangle algorithm; suitable for unimodal histograms with an extended tail |
-| **minimum** | Histogram-based minimum method; assumes a bimodal distribution |
+| Method             | Description                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| **mean**     | Pixels above the image mean intensity are classified as positive                             |
+| **otsu**     | Otsu's method; minimises intra-class variance (suitable for bimodal intensity distributions) |
+| **yen**      | Yen's method; maximises correlation between original and thresholded images                  |
+| **triangle** | Triangle algorithm; suitable for unimodal histograms with an extended tail                   |
+| **minimum**  | Histogram-based minimum method; assumes a bimodal distribution                               |
 
 The thresholding method can be changed in the Inputs panel and the pipeline re-run.
 
@@ -207,17 +222,17 @@ All per-image outputs are saved in a per-image subfolder (named after the TIFF s
 
 ### Segmentation and Tracking Outputs
 
-| File | Description |
-|---|---|
-| `masks_stack.tiff` | Cellpose segmentation masks (T, Y, X), uint16 |
-| `linked_labels_trackmate.tiff` | Labels used for analysis: TrackMate-linked for timelapses, or the Cellpose labels directly for a single frame |
-| `trackmate_tracks.csv` | TrackMate spot-level output for timelapses (not created for single-frame inputs) |
-| `tracking_skipped_single_frame.json` | Present only for single-frame inputs; records that TrackMate was intentionally skipped |
+| File                                   | Description                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `masks_stack.tiff`                   | Cellpose segmentation masks (T, Y, X), uint16                                                                 |
+| `linked_labels_trackmate.tiff`       | Labels used for analysis: TrackMate-linked for timelapses, or the Cellpose labels directly for a single frame |
+| `trackmate_tracks.csv`               | TrackMate spot-level output for timelapses (not created for single-frame inputs)                              |
+| `tracking_skipped_single_frame.json` | Present only for single-frame inputs; records that TrackMate was intentionally skipped                        |
 
 ### Per-Cell, Per-Frame Output
 
-| File | Description |
-|---|---|
+| File                    | Description                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `per_frame_cells.csv` | **The single analysis output.** One row per (frame, cell), consolidating area, raw fluorescence, thresholded positive area, persistent + snapshot fate flags, and lineage info |
 
 Columns (in order):
@@ -234,19 +249,19 @@ Columns (in order):
 
 For each plot type below, FluoroFate writes one "all cells" PDF plus three frame-presence-filtered variants restricted to cells appearing in at least 40%, 60% and 80% of frames (suffixes `_min40pct.pdf`, `_min60pct.pdf`, `_min80pct.pdf`). The filtered variants exclude cells that are tracked for only a small fraction of the timelapse, which are often segmentation artefacts or cells entering/leaving the field of view. The two percentage plots (`percentages_persistent` and `percentages_snapshot`, including their filtered variants) are each accompanied by a matching `.csv` holding the plotted values.
 
-| File (all cells) | Filtered variants | Description |
-|---|---|---|
+| File (all cells)               | Filtered variants                               | Description                                                    |
+| ------------------------------ | ----------------------------------------------- | -------------------------------------------------------------- |
 | `percentages_persistent.pdf` | `percentages_persistent_min{40,60,80}pct.pdf` | Cumulative percentage of persistently-positive cells per frame |
-| `percentages_snapshot.pdf` | `percentages_snapshot_min{40,60,80}pct.pdf` | Per-frame snapshot-category percentages |
-| `snapshot_trajectories.pdf` | `snapshot_trajectories_min{40,60,80}pct.pdf` | XY trajectory plots coloured by snapshot category |
-| `snapshot_timelines.pdf` | `snapshot_timelines_min{40,60,80}pct.pdf` | Per-cell horizontal-bar timeline coloured by category |
+| `percentages_snapshot.pdf`   | `percentages_snapshot_min{40,60,80}pct.pdf`   | Per-frame snapshot-category percentages                        |
+| `snapshot_trajectories.pdf`  | `snapshot_trajectories_min{40,60,80}pct.pdf`  | XY trajectory plots coloured by snapshot category              |
+| `snapshot_timelines.pdf`     | `snapshot_timelines_min{40,60,80}pct.pdf`     | Per-cell horizontal-bar timeline coloured by category          |
 
 ### Run-Level Outputs
 
-| File | Description |
-|---|---|
+| File                | Description                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `run_config.json` | Every parameter used for this run (Cellpose, TrackMate, fluorophores, thresholds, brightfield), package versions, platform, and git commit |
-| `run.log` | Full run log (also streamed live in the Run & Log dock widget) |
+| `run.log`         | Full run log (also streamed live in the Run & Log dock widget)                                                                             |
 
 ### Batch-Level Output
 
