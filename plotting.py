@@ -1,4 +1,4 @@
-"""Plotting functions for persistent and snapshot cell-fate analyses."""
+"""Plotting functions for persistent and dynamic cell-fate analyses."""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,8 +43,8 @@ def plot_persistent_percentages(summary_dataframe, fluorophore_names, title="Per
     return figure, axis
 
 
-def plot_snapshot_percentages(summary_dataframe, categories, title="Per-Frame Categories Over Time"):
-    """Plot percent-cells per category over frames (snapshot mode).
+def plot_dynamic_percentages(summary_dataframe, categories, title="Per-Frame Categories Over Time"):
+    """Plot percent-cells per category over frames (dynamic mode).
 
     Each category gets a colour derived from
     :func:`colours.build_category_colormap`. Unlike persistent plots,
@@ -53,7 +53,7 @@ def plot_snapshot_percentages(summary_dataframe, categories, title="Per-Frame Ca
     Parameters
     ----------
     summary_dataframe : pandas.DataFrame
-        Output of :func:`fate_assignment.compute_snapshot_percentages`.
+        Output of :func:`fate_assignment.compute_dynamic_percentages`.
     categories : list[str]
         Category names; each must have a ``<category>_pct`` column in
         ``summary_dataframe``.
@@ -74,8 +74,8 @@ def plot_snapshot_percentages(summary_dataframe, categories, title="Per-Frame Ca
     return figure, axis
 
 
-def plot_snapshot_trajectories(tracks_dataframe, snapshot_dataframe, title="Snapshot Trajectories by Category"):
-    """Plot cell XY trajectories coloured by snapshot category at each step.
+def plot_dynamic_trajectories(tracks_dataframe, dynamic_dataframe, title="dynamic Trajectories by Category"):
+    """Plot cell XY trajectories coloured by dynamic category at each step.
 
     Each cell's track is drawn as a series of line segments, where each
     segment is coloured according to the cell's category in that frame.
@@ -88,8 +88,8 @@ def plot_snapshot_trajectories(tracks_dataframe, snapshot_dataframe, title="Snap
     tracks_dataframe : pandas.DataFrame
         TrackMate tracks with columns ``track_id, t, x, y`` and
         optionally ``parent_track_id`` for lineage connections.
-    snapshot_dataframe : pandas.DataFrame
-        Output of :func:`fate_assignment.assign_snapshot_fates`.
+    dynamic_dataframe : pandas.DataFrame
+        Output of :func:`fate_assignment.assign_dynamic_fates`.
     title : str
         Plot title.
 
@@ -105,7 +105,7 @@ def plot_snapshot_trajectories(tracks_dataframe, snapshot_dataframe, title="Snap
         plt.tight_layout()
         return figure, axis
 
-    categories = sorted(snapshot_dataframe["category"].unique())
+    categories = sorted(dynamic_dataframe["category"].unique())
     category_colormap = build_category_colormap(categories)
     if "negative" not in category_colormap:
         category_colormap["negative"] = (0.6, 0.6, 0.6)
@@ -113,7 +113,7 @@ def plot_snapshot_trajectories(tracks_dataframe, snapshot_dataframe, title="Snap
     track_points = tracks_dataframe.copy()
     track_points["frame"] = track_points["t"].astype(int)
     track_points["label_id"] = track_points["track_id"].astype(int) + 1
-    category_lookup = snapshot_dataframe[["label_id", "frame", "category"]].copy()
+    category_lookup = dynamic_dataframe[["label_id", "frame", "category"]].copy()
     merged_tracks = track_points.merge(category_lookup, on=["label_id", "frame"], how="left")
     merged_tracks["category"] = merged_tracks["category"].fillna("negative")
 
@@ -153,27 +153,27 @@ def plot_snapshot_trajectories(tracks_dataframe, snapshot_dataframe, title="Snap
     axis.invert_yaxis()
     axis.set(xlabel="x", ylabel="y", title=title, aspect="equal")
     legend_handles = [plt.Line2D([0], [0], color=category_colormap[category], lw=2, label=category) for category in sorted(category_colormap.keys())]
-    axis.legend(handles=legend_handles, title="Snapshot category", loc="best")
+    axis.legend(handles=legend_handles, title="dynamic category", loc="best")
     plt.tight_layout()
     return figure, axis
 
 
-def plot_snapshot_cell_timelines(snapshot_dataframe, tracks_dataframe=None, title="Cell Status Over Time"):
+def plot_dynamic_cell_timelines(dynamic_dataframe, tracks_dataframe=None, title="Cell Status Over Time"):
     """Horizontal bar chart showing each cell's category across all frames.
 
     Each row is a cell, each column is a frame, and the colour of each
-    bar is the cell's snapshot category in that frame.
+    bar is the cell's dynamic category in that frame.
 
     If lineage information is available (``lineage_id`` and
     ``parent_track_id`` columns in ``tracks_dataframe``) cells are sorted
     by lineage and dashed vertical lines are drawn at each daughter
     track's first *tracked* frame (i.e. the actual division frame as
-    detected by TrackMate, not the daughter's first snapshot frame).
+    detected by TrackMate, not the daughter's first dynamic frame).
 
     Parameters
     ----------
-    snapshot_dataframe : pandas.DataFrame
-        Output of :func:`fate_assignment.assign_snapshot_fates`.
+    dynamic_dataframe : pandas.DataFrame
+        Output of :func:`fate_assignment.assign_dynamic_fates`.
     tracks_dataframe : pandas.DataFrame or None, default None
         TrackMate tracks CSV. If it contains ``lineage_id`` and
         ``parent_track_id`` columns, lineage sorting and division lines
@@ -185,15 +185,15 @@ def plot_snapshot_cell_timelines(snapshot_dataframe, tracks_dataframe=None, titl
     -------
     figure, axis : matplotlib.figure.Figure, matplotlib.axes.Axes
     """
-    if snapshot_dataframe is None or len(snapshot_dataframe) == 0:
+    if dynamic_dataframe is None or len(dynamic_dataframe) == 0:
         figure, axis = plt.subplots(figsize=(10, 4))
         axis.set_title(title)
-        axis.text(0.5, 0.5, "No snapshot data", ha="center", va="center", transform=axis.transAxes)
+        axis.text(0.5, 0.5, "No dynamic data", ha="center", va="center", transform=axis.transAxes)
         axis.axis("off")
         plt.tight_layout()
         return figure, axis
 
-    categories = sorted(snapshot_dataframe["category"].unique())
+    categories = sorted(dynamic_dataframe["category"].unique())
     category_colormap = build_category_colormap(categories)
     has_lineage = (tracks_dataframe is not None and len(tracks_dataframe) > 0 and "lineage_id" in tracks_dataframe.columns)
 
@@ -202,23 +202,23 @@ def plot_snapshot_cell_timelines(snapshot_dataframe, tracks_dataframe=None, titl
         tracks_with_label["label_id"] = tracks_with_label["track_id"].astype(int) + 1
         lineage_lookup = tracks_with_label.drop_duplicates("label_id")[["label_id", "lineage_id", "parent_track_id"]].set_index("label_id")
         # Actual division frame for each daughter = the daughter's first
-        # frame as recorded by TrackMate (not its first snapshot frame).
+        # frame as recorded by TrackMate (not its first dynamic frame).
         first_tracked_frame_per_label = tracks_with_label.groupby("label_id")["t"].min().astype(int).to_dict()
-        cell_ids = sorted(snapshot_dataframe["label_id"].unique(), key=lambda label_id: tuple(int(part) if part.isdigit() else 0 for part in str(lineage_lookup.loc[label_id, "lineage_id"] if label_id in lineage_lookup.index else label_id).split(".")))
+        cell_ids = sorted(dynamic_dataframe["label_id"].unique(), key=lambda label_id: tuple(int(part) if part.isdigit() else 0 for part in str(lineage_lookup.loc[label_id, "lineage_id"] if label_id in lineage_lookup.index else label_id).split(".")))
         label_display = {label_id: (str(lineage_lookup.loc[label_id, "lineage_id"]) if label_id in lineage_lookup.index else str(label_id)) for label_id in cell_ids}
     else:
-        cell_ids = sorted(snapshot_dataframe["label_id"].unique())
+        cell_ids = sorted(dynamic_dataframe["label_id"].unique())
         label_display = {label_id: str(label_id) for label_id in cell_ids}
 
     num_cells = len(cell_ids)
     cell_y_position = {cell_id: row_index for row_index, cell_id in enumerate(cell_ids)}
-    minimum_frame = int(snapshot_dataframe["frame"].min())
-    maximum_frame = int(snapshot_dataframe["frame"].max())
+    minimum_frame = int(dynamic_dataframe["frame"].min())
+    maximum_frame = int(dynamic_dataframe["frame"].max())
 
     plot_height = max(3, min(num_cells * 0.25 + 1, 40))
     figure, axis = plt.subplots(figsize=(max(8, (maximum_frame - minimum_frame) * 0.15 + 2), plot_height))
 
-    for _, row in snapshot_dataframe.iterrows():
+    for _, row in dynamic_dataframe.iterrows():
         axis.barh(cell_y_position[row["label_id"]], width=1, left=int(row["frame"]), height=0.8, color=category_colormap.get(row["category"], (0.5, 0.5, 0.5)), edgecolor="none", linewidth=0)
 
     if has_lineage:

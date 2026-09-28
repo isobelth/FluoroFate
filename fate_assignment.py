@@ -5,7 +5,7 @@ Two complementary modes are supported:
 * **Persistent** — once a cell turns positive for a fluorophore, it
   stays that way. Appropriate for irreversible markers (e.g. Annexin V,
   PI). One row per cell summarising its fate.
-* **Snapshot** — the category of every cell is recomputed independently
+* **dynamic** — the category of every cell is recomputed independently
   in every frame, so cells can switch categories over time. One row per
   ``(cell, frame)``.
 
@@ -102,7 +102,7 @@ def assign_persistent_fates(linked_labels, frame_cell_positive_area):
         # Paint each fated cell only from its first-positive frame onwards, so
         # the persistent layer means "cumulatively positive by this frame" and
         # cells freshly becoming persistent-positive at frame N coincide with
-        # the snapshot-positive layer at frame N.
+        # the dynamic-positive layer at frame N.
         fate_rows = fates_dataframe[fates_dataframe["fate"] == fluorophore_name]
         stack = np.zeros_like(linked_labels, dtype=np.uint32)
         first_frame_column = f"first_{fluorophore_name}_frame"
@@ -125,7 +125,7 @@ def assign_persistent_fates(linked_labels, frame_cell_positive_area):
     return fates_dataframe, locked_labels, per_frame_dataframe
 
 
-def assign_snapshot_fates(linked_labels, frame_cell_positive_area):
+def assign_dynamic_fates(linked_labels, frame_cell_positive_area):
     """Classify every cell independently in every frame (no memory across time).
 
     The category for a cell in a given frame is built by joining the
@@ -153,19 +153,19 @@ def assign_snapshot_fates(linked_labels, frame_cell_positive_area):
         ``<fluorophore>_positive_area`` and ``category``.
     """
     fluorophore_names = list(frame_cell_positive_area.keys())
-    snapshot_rows = []
+    dynamic_rows = []
     for frame_index in range(linked_labels.shape[0]):
         cell_shapes = measure_all_cells_in_frame(linked_labels[frame_index])
         for label_id, (area, roundness) in cell_shapes.items():
             is_positive = {fluorophore_name: frame_cell_positive_area[fluorophore_name][frame_index].get(label_id, 0) > 0 for fluorophore_name in fluorophore_names}
             category = "+".join(fluorophore_name for fluorophore_name in fluorophore_names if is_positive[fluorophore_name]) or "negative"
-            snapshot_row = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
-            snapshot_row.update(is_positive)
+            dynamic_row = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
+            dynamic_row.update(is_positive)
             for fluorophore_name in fluorophore_names:
-                snapshot_row[f"{fluorophore_name}_positive_area"] = frame_cell_positive_area[fluorophore_name][frame_index].get(label_id, 0)
-            snapshot_row["category"] = category
-            snapshot_rows.append(snapshot_row)
-    return pd.DataFrame(snapshot_rows)
+                dynamic_row[f"{fluorophore_name}_positive_area"] = frame_cell_positive_area[fluorophore_name][frame_index].get(label_id, 0)
+            dynamic_row["category"] = category
+            dynamic_rows.append(dynamic_row)
+    return pd.DataFrame(dynamic_rows)
 
 
 def compute_persistent_percentages(assignments_dataframe, num_frames, fluorophore_names):
@@ -208,16 +208,16 @@ def compute_persistent_percentages(assignments_dataframe, num_frames, fluorophor
     return pd.DataFrame(columns)
 
 
-def compute_snapshot_percentages(snapshot_dataframe, num_frames):
-    """Build a time-series of percent-cells per category (snapshot mode).
+def compute_dynamic_percentages(dynamic_dataframe, num_frames):
+    """Build a time-series of percent-cells per category (dynamic mode).
 
-    Unlike persistent percentages, snapshot percentages can go up or
+    Unlike persistent percentages, dynamic percentages can go up or
     down between frames because a cell can change category.
 
     Parameters
     ----------
-    snapshot_dataframe : pandas.DataFrame
-        Output of :func:`assign_snapshot_fates` (one row per
+    dynamic_dataframe : pandas.DataFrame
+        Output of :func:`assign_dynamic_fates` (one row per
         ``(cell, frame)``).
     num_frames : int
         Total number of frames in the time-lapse.
@@ -230,8 +230,8 @@ def compute_snapshot_percentages(snapshot_dataframe, num_frames):
         Sorted list of category names (positive categories first,
         ``"negative"`` last).
     """
-    categories = sorted(snapshot_dataframe["category"].unique(), key=lambda category: (category == "negative", category))
-    counts = snapshot_dataframe.groupby(["frame", "category"]).size().unstack(fill_value=0)
+    categories = sorted(dynamic_dataframe["category"].unique(), key=lambda category: (category == "negative", category))
+    counts = dynamic_dataframe.groupby(["frame", "category"]).size().unstack(fill_value=0)
     totals_per_frame = counts.sum(axis=1)
     percentages = counts.div(totals_per_frame, axis=0) * 100.0
     percentages = percentages.reindex(range(num_frames), fill_value=0.0)
@@ -241,8 +241,8 @@ def compute_snapshot_percentages(snapshot_dataframe, num_frames):
     return pd.DataFrame(columns), categories
 
 
-def filter_by_frame_presence(tracks_dataframe, snapshot_dataframe, num_frames, minimum_percentage):
-    """Drop cells that appear in fewer than *minimum_percentage* % of frames (snapshot mode).
+def filter_by_frame_presence(tracks_dataframe, dynamic_dataframe, num_frames, minimum_percentage):
+    """Drop cells that appear in fewer than *minimum_percentage* % of frames (dynamic mode).
 
     Cells tracked for only a small fraction of the time-lapse are often
     segmentation artefacts or cells entering/leaving the field of view.
@@ -251,9 +251,9 @@ def filter_by_frame_presence(tracks_dataframe, snapshot_dataframe, num_frames, m
     ----------
     tracks_dataframe : pandas.DataFrame or None
         TrackMate tracks CSV (columns: ``track_id, t, x, y, ...``). If
-        ``None`` or empty, only the snapshot table is filtered.
-    snapshot_dataframe : pandas.DataFrame
-        Output of :func:`assign_snapshot_fates`.
+        ``None`` or empty, only the dynamic table is filtered.
+    dynamic_dataframe : pandas.DataFrame
+        Output of :func:`assign_dynamic_fates`.
     num_frames : int
         Total frames in the time-lapse.
     minimum_percentage : float
@@ -264,19 +264,19 @@ def filter_by_frame_presence(tracks_dataframe, snapshot_dataframe, num_frames, m
     filtered_tracks_dataframe : pandas.DataFrame or None
         Filtered tracks (or the original if ``tracks_dataframe`` is
         ``None``/empty).
-    filtered_snapshot_dataframe : pandas.DataFrame
-        Filtered snapshot data.
+    filtered_dynamic_dataframe : pandas.DataFrame
+        Filtered dynamic data.
     """
     minimum_frame_count = num_frames * minimum_percentage / 100.0
-    frame_counts = snapshot_dataframe.groupby("label_id")["frame"].nunique()
+    frame_counts = dynamic_dataframe.groupby("label_id")["frame"].nunique()
     keep_label_ids = frame_counts[frame_counts >= minimum_frame_count].index
-    filtered_snapshot_dataframe = snapshot_dataframe[snapshot_dataframe["label_id"].isin(keep_label_ids)].copy()
+    filtered_dynamic_dataframe = dynamic_dataframe[dynamic_dataframe["label_id"].isin(keep_label_ids)].copy()
     if tracks_dataframe is not None and len(tracks_dataframe) > 0:
         keep_track_ids = keep_label_ids.astype(int) - 1
         filtered_tracks_dataframe = tracks_dataframe[tracks_dataframe["track_id"].isin(keep_track_ids)].copy()
     else:
         filtered_tracks_dataframe = tracks_dataframe
-    return filtered_tracks_dataframe, filtered_snapshot_dataframe
+    return filtered_tracks_dataframe, filtered_dynamic_dataframe
 
 
 def filter_persistent_by_frame_presence(assignments_dataframe, linked_labels, num_frames, minimum_percentage):

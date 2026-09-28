@@ -16,12 +16,12 @@ from skimage.filters import (gaussian, threshold_mean, threshold_minimum,
                              threshold_otsu, threshold_triangle, threshold_yen)
 from skimage.measure import label
 
-from fate_assignment import (assign_persistent_fates, assign_snapshot_fates,
-                             compute_persistent_percentages, compute_snapshot_percentages,
+from fate_assignment import (assign_persistent_fates, assign_dynamic_fates,
+                             compute_persistent_percentages, compute_dynamic_percentages,
                              filter_by_frame_presence, filter_persistent_by_frame_presence)
 from measurement import compute_cell_positivity, compute_per_cell_intensity_area
-from plotting import (plot_persistent_percentages, plot_snapshot_cell_timelines,
-                      plot_snapshot_percentages, plot_snapshot_trajectories)
+from plotting import (plot_persistent_percentages, plot_dynamic_cell_timelines,
+                      plot_dynamic_percentages, plot_dynamic_trajectories)
 
 THRESHOLD_METHODS = {
     "otsu": threshold_otsu,
@@ -32,10 +32,9 @@ THRESHOLD_METHODS = {
 }
 
 
-def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
-                 output_directory, file_stem, blur_sigma=1.0,
-                 frame_presence_thresholds=(40, 60, 80), progress_callback=None):
-    """Run the full persistent + snapshot fate analysis for one image.
+def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2d, analysis_type,
+                 output_directory, file_stem, frame_presence_threshold, progress_callback=None):
+    """Run the full persistent + dynamic fate analysis for one image.
 
     Parameters
     ----------
@@ -91,7 +90,7 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
         threshold = channel_settings[channel]["threshold"]
         stack = original_image[:, channel].astype(np.float64)
         fluorophore_stacks[name] = stack
-        blurred_stack = np.stack([gaussian(frame, sigma=blur_sigma, preserve_range=True) for frame in stack], axis=0)
+        blurred_stack = np.stack([gaussian(frame, sigma=1, preserve_range=True) for frame in stack], axis=0)
         blob_labels = np.zeros(blurred_stack.shape, dtype=np.uint32)
         for frame_index in range(num_frames):
             if isinstance(threshold, str):
@@ -105,29 +104,31 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
     frame_cell_positive_area, positive_cell_labels = compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_names)
 
     # --- Persistent mode ---
-    report(0.4, "Persistent fate assignment...")
-    persistent_fates_df, locked_labels, _ = assign_persistent_fates(linked_labels, frame_cell_positive_area)
-    persistent_fates_df = persistent_fates_df.sort_values("label_id").reset_index(drop=True)
-    persistent_summary_df = compute_persistent_percentages(persistent_fates_df, num_frames, fluorophore_names)
-    persistent_summary_df.to_csv(output_directory / "percentages_persistent.csv", index=False)
-    figure, _ = plot_persistent_percentages(persistent_summary_df, fluorophore_names, title=file_stem)
-    figure.savefig(str(output_directory / "percentages_persistent.pdf"), bbox_inches="tight")
-    plt.close(figure)
+    if analysis_type.lower() == "persistent":
+        report(0.5, "Persistent fate assignment...")
+        persistent_fates_df, locked_labels, _ = assign_persistent_fates(linked_labels, frame_cell_positive_area)
+        persistent_fates_df = persistent_fates_df.sort_values("label_id").reset_index(drop=True)
+        persistent_summary_df = compute_persistent_percentages(persistent_fates_df, num_frames, fluorophore_names)
+        persistent_summary_df.to_csv(output_directory / "percentages_persistent.csv", index=False)
+        figure, _ = plot_persistent_percentages(persistent_summary_df, fluorophore_names, title=file_stem)
+        figure.savefig(str(output_directory / "percentages_persistent.pdf"), bbox_inches="tight")
+        plt.close(figure)
 
-    # --- Snapshot mode ---
-    report(0.6, "Snapshot fate assignment...")
-    snapshot_df = assign_snapshot_fates(linked_labels, frame_cell_positive_area).sort_values(["label_id", "frame"]).reset_index(drop=True)
-    snapshot_summary_df, snapshot_categories = compute_snapshot_percentages(snapshot_df, num_frames)
-    snapshot_summary_df.to_csv(output_directory / "percentages_snapshot.csv", index=False)
-    figure, _ = plot_snapshot_percentages(snapshot_summary_df, snapshot_categories, title=file_stem)
-    figure.savefig(str(output_directory / "percentages_snapshot.pdf"), bbox_inches="tight")
-    plt.close(figure)
-    figure, _ = plot_snapshot_trajectories(tracks_df, snapshot_df, title=f"{file_stem} — snapshot trajectories")
-    figure.savefig(str(output_directory / "snapshot_trajectories.pdf"), bbox_inches="tight")
-    plt.close(figure)
-    figure, _ = plot_snapshot_cell_timelines(snapshot_df, tracks_dataframe=tracks_df, title=f"{file_stem} — cell timelines")
-    figure.savefig(str(output_directory / "snapshot_timelines.pdf"), bbox_inches="tight")
-    plt.close(figure)
+    # --- dynamic mode ---
+    elif analysis_type.lower() == "dynamic":
+        report(0.5, "dynamic fate assignment...")
+        dynamic_df = assign_dynamic_fates(linked_labels, frame_cell_positive_area).sort_values(["label_id", "frame"]).reset_index(drop=True)
+        dynamic_summary_df, dynamic_categories = compute_dynamic_percentages(dynamic_df, num_frames)
+        dynamic_summary_df.to_csv(output_directory / "percentages_dynamic.csv", index=False)
+        figure, _ = plot_dynamic_percentages(dynamic_summary_df, dynamic_categories, title=file_stem)
+        figure.savefig(str(output_directory / "percentages_dynamic.pdf"), bbox_inches="tight")
+        plt.close(figure)
+        figure, _ = plot_dynamic_trajectories(tracks_df, dynamic_df, title=f"{file_stem} — dynamic trajectories")
+        figure.savefig(str(output_directory / "dynamic_trajectories.pdf"), bbox_inches="tight")
+        plt.close(figure)
+        figure, _ = plot_dynamic_cell_timelines(dynamic_df, tracks_dataframe=tracks_df, title=f"{file_stem} — cell timelines")
+        figure.savefig(str(output_directory / "dynamic_timelines.pdf"), bbox_inches="tight")
+        plt.close(figure)
 
     # --- Frame-presence-filtered plot variants (cells present in >= N% of frames) ---
     report(0.75, "Frame-presence-filtered plots...")
@@ -141,18 +142,18 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
             figure, _ = plot_persistent_percentages(persistent_summary_filtered, fluorophore_names, title=f"{file_stem} — persistent ({label_text}, n={len(persistent_filtered)})")
             figure.savefig(str(output_directory / f"percentages_persistent_{suffix}.pdf"), bbox_inches="tight")
             plt.close(figure)
-        tracks_filtered, snapshot_filtered = filter_by_frame_presence(tracks_df, snapshot_df, num_frames, min_pct)
-        if len(snapshot_filtered) > 0:
-            snapshot_summary_filtered, snapshot_categories_filtered = compute_snapshot_percentages(snapshot_filtered, num_frames)
-            snapshot_summary_filtered.to_csv(output_directory / f"percentages_snapshot_{suffix}.csv", index=False)
-            figure, _ = plot_snapshot_percentages(snapshot_summary_filtered, snapshot_categories_filtered, title=f"{file_stem} — snapshot ({label_text})")
-            figure.savefig(str(output_directory / f"percentages_snapshot_{suffix}.pdf"), bbox_inches="tight")
+        tracks_filtered, dynamic_filtered = filter_by_frame_presence(tracks_df, dynamic_df, num_frames, min_pct)
+        if len(dynamic_filtered) > 0:
+            dynamic_summary_filtered, dynamic_categories_filtered = compute_dynamic_percentages(dynamic_filtered, num_frames)
+            dynamic_summary_filtered.to_csv(output_directory / f"percentages_dynamic_{suffix}.csv", index=False)
+            figure, _ = plot_dynamic_percentages(dynamic_summary_filtered, dynamic_categories_filtered, title=f"{file_stem} — dynamic ({label_text})")
+            figure.savefig(str(output_directory / f"percentages_dynamic_{suffix}.pdf"), bbox_inches="tight")
             plt.close(figure)
-            figure, _ = plot_snapshot_trajectories(tracks_filtered, snapshot_filtered, title=f"{file_stem} — snapshot trajectories ({label_text})")
-            figure.savefig(str(output_directory / f"snapshot_trajectories_{suffix}.pdf"), bbox_inches="tight")
+            figure, _ = plot_dynamic_trajectories(tracks_filtered, dynamic_filtered, title=f"{file_stem} — dynamic trajectories ({label_text})")
+            figure.savefig(str(output_directory / f"dynamic_trajectories_{suffix}.pdf"), bbox_inches="tight")
             plt.close(figure)
-            figure, _ = plot_snapshot_cell_timelines(snapshot_filtered, tracks_dataframe=tracks_filtered, title=f"{file_stem} — cell timelines ({label_text})")
-            figure.savefig(str(output_directory / f"snapshot_timelines_{suffix}.pdf"), bbox_inches="tight")
+            figure, _ = plot_dynamic_cell_timelines(dynamic_filtered, tracks_dataframe=tracks_filtered, title=f"{file_stem} — cell timelines ({label_text})")
+            figure.savefig(str(output_directory / f"dynamic_timelines_{suffix}.pdf"), bbox_inches="tight")
             plt.close(figure)
 
     # --- Consolidated per-(frame, cell) CSV ---
@@ -168,7 +169,7 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
     mapped_fate = per_frame_cells_df["cell_id"].map(fate_by_cell)
     for name in fluorophore_names:
         per_frame_cells_df[f"Persistently {name}?"] = np.where(mapped_fate.eq(name), "Y", "N")
-        per_frame_cells_df[f"Snapshot {name}?"] = np.where(per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
+        per_frame_cells_df[f"dynamic {name}?"] = np.where(per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
         per_frame_cells_df[f"{name} Threshold Method"] = str(fluorophore_thresholds[name])
 
     # Lineage columns come from the tracks table (track_id == cell_id - 1).
@@ -195,7 +196,7 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
     column_order += [f"Thresholded {name} Area (Pixels)" for name in fluorophore_names]
     column_order += [f"{name} Threshold Method" for name in fluorophore_names]
     column_order += [f"Persistently {name}?" for name in fluorophore_names]
-    column_order += [f"Snapshot {name}?" for name in fluorophore_names]
+    column_order += [f"dynamic {name}?" for name in fluorophore_names]
     per_frame_cells_df = per_frame_cells_df[column_order]
     per_frame_cells_df.to_csv(output_directory / "per_frame_cells.csv", index=False)
 
@@ -211,17 +212,17 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,
     for name in fluorophore_names:
         summary_record[f"persistent_n_{name}"] = int((persistent_fates_df["fate"] == name).sum())
         summary_record[f"persistent_final_pct_{name}"] = float(persistent_summary_df[f"{name}_pct"].iloc[-1])
-    last_frame_snapshot = snapshot_df[snapshot_df["frame"] == num_frames - 1]
-    last_frame_total = max(len(last_frame_snapshot), 1)
-    for category in sorted(snapshot_df["category"].unique()):
-        summary_record[f"snapshot_final_pct_{category}"] = 100.0 * (last_frame_snapshot["category"] == category).sum() / last_frame_total
+    last_frame_dynamic = dynamic_df[dynamic_df["frame"] == num_frames - 1]
+    last_frame_total = max(len(last_frame_dynamic), 1)
+    for category in sorted(dynamic_df["category"].unique()):
+        summary_record[f"dynamic_final_pct_{category}"] = 100.0 * (last_frame_dynamic["category"] == category).sum() / last_frame_total
 
-    # --- Napari layers: one persistent + one snapshot layer per fluorophore ---
+    # --- Napari layers: one persistent + one dynamic layer per fluorophore ---
     layer_specs = []
     for name, locked_label_image in locked_labels.items():
         layer_specs.append({"name": f"Persistent: {name} positive", "labels": locked_label_image, "colour": fluorophore_colours[name]})
     for name, positive_label_image in positive_cell_labels.items():
-        layer_specs.append({"name": f"Snapshot: {name} positive", "labels": positive_label_image, "colour": fluorophore_colours[name]})
+        layer_specs.append({"name": f"dynamic: {name} positive", "labels": positive_label_image, "colour": fluorophore_colours[name]})
 
     report(1.0, "Analysis complete")
     return {"summary_record": summary_record, "layer_specs": layer_specs, "per_frame_cells": per_frame_cells_df}
