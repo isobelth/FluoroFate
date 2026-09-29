@@ -37,15 +37,15 @@ from magicgui.widgets import TextEdit
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QApplication, QHBoxLayout, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
-from utils import ensure_frame_axis, normalise_tiff_to_tcyx, running_in_notebook
-from colours import assign_colours, get_fluor_base_colour, add_coloured_labels
-from measurement import compute_cell_positivity, compute_per_cell_intensity_area
-from segmentation import cellpose_live_segmentation, segment_fluorescence
-from tracking import generate_trackmate_labels
-from fate_assignment import (assign_persistent_fates, assign_snapshot_fates,
+from to_delete.utils import ensure_frame_axis, normalise_tiff_to_tcyx, running_in_notebook
+from to_delete.colours import assign_colours, get_fluor_base_colour, add_coloured_labels
+from to_delete.measurement import compute_cell_positivity, compute_per_cell_intensity_area
+from to_delete.segmentation import cellpose_live_segmentation, segment_fluorescence
+from to_delete.tracking import generate_trackmate_labels
+from to_delete.fate_assignment import (assign_persistent_fates, assign_snapshot_fates,
                              compute_persistent_percentages, compute_snapshot_percentages,
                              filter_by_frame_presence, filter_persistent_by_frame_presence)
-from plotting import (plot_persistent_percentages, plot_snapshot_percentages,
+from to_delete.plotting import (plot_persistent_percentages, plot_snapshot_percentages,
                       plot_snapshot_trajectories, plot_snapshot_cell_timelines)
 
 warnings.filterwarnings("ignore")

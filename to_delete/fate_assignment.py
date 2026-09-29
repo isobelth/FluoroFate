@@ -17,7 +17,7 @@ The shared input is ``frame_cell_positive_area`` produced by
 import numpy as np
 import pandas as pd
 
-from measurement import measure_all_cells_in_frame
+from to_delete.measurement import measure_all_cells_in_frame
 
 
 def assign_persistent_fates(linked_labels, frame_cell_positive_area):

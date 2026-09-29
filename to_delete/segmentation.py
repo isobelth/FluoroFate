@@ -19,7 +19,7 @@ from cellpose import io, models
 from skimage.filters import gaussian, threshold_mean, threshold_minimum, threshold_otsu, threshold_triangle, threshold_yen
 from skimage.measure import label
 
-from utils import ensure_frame_axis
+from to_delete.utils import ensure_frame_axis
 
 LOGGER = logging.getLogger(__name__)
 

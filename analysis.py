@@ -19,7 +19,7 @@ from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 from skimage.filters import (gaussian, threshold_mean, threshold_minimum,
                              threshold_otsu, threshold_triangle, threshold_yen)
-from skimage.measure import label, regionprops
+from skimage.measure import regionprops
 
 THRESHOLD_METHODS = {
     "otsu": threshold_otsu,
@@ -40,7 +40,7 @@ def build_category_colormap(categories, fluorophore_colours):
             category_colormap[category] = "gray"
             continue
         component_rgbs = [mcolors.to_rgb(fluorophore_colours[part]) for part in category.split("+")]
-        category_colormap[category] = tuple(np.mean(component_rgbs, axis=0))
+        category_colormap[category] = tuple(float(value) for value in np.mean(component_rgbs, axis=0))
     return category_colormap
 
 
@@ -53,12 +53,13 @@ def measure_all_cells_in_frame(label_image):
     return measurements
 
 
-def compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_names):
-    """Assign fluorescence blobs to tracked cells per frame by majority pixel overlap.
+def compute_cell_positivity(linked_labels, positive_masks, fluorophore_names):
+    """Mark each cell positive if any thresholded-positive pixel lies inside it, per frame.
 
     Returns (frame_cell_positive_area, positive_cell_labels), where
-    frame_cell_positive_area[name][frame_index][cell_id] is the positive pixel area
-    and positive_cell_labels[name] is a label stack of the cells positive in each frame.
+    frame_cell_positive_area[name][frame_index][cell_id] is the number of positive
+    pixels inside that cell and positive_cell_labels[name] is a label stack of the
+    cells positive in each frame.
     """
     num_frames = linked_labels.shape[0]
     frame_cell_positive_area = {}
@@ -67,17 +68,15 @@ def compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_na
         frame_cell_positive_area[fluorophore_name] = {}
         per_frame_positive_labels = np.zeros_like(linked_labels)
         for frame_index in range(num_frames):
-            positive_labels_frame = positive_label_stacks[fluorophore_name][frame_index]
+            positive_mask = positive_masks[fluorophore_name][frame_index]
             linked_labels_frame = linked_labels[frame_index]
+            # Cell IDs sitting under a positive pixel; a cell is positive if it appears at all.
+            cell_ids_under_positive = linked_labels_frame[positive_mask]
+            cell_ids_under_positive = cell_ids_under_positive[cell_ids_under_positive > 0]
             cell_positive_area = {}
-            for region in regionprops(positive_labels_frame):
-                cell_labels_under_blob = linked_labels_frame[region.coords[:, 0], region.coords[:, 1]]
-                non_background = cell_labels_under_blob[cell_labels_under_blob > 0]
-                if non_background.size == 0:
-                    continue
-                unique_cell_ids, pixel_counts = np.unique(non_background, return_counts=True)
-                winning_cell_id = int(unique_cell_ids[int(np.argmax(pixel_counts))])
-                cell_positive_area[winning_cell_id] = cell_positive_area.get(winning_cell_id, 0) + int(region.area)
+            if cell_ids_under_positive.size:
+                unique_cell_ids, pixel_counts = np.unique(cell_ids_under_positive, return_counts=True)
+                cell_positive_area = {int(cell_id): int(count) for cell_id, count in zip(unique_cell_ids, pixel_counts)}
             frame_cell_positive_area[fluorophore_name][frame_index] = cell_positive_area
             if cell_positive_area:
                 positive_ids = np.fromiter(cell_positive_area.keys(), dtype=np.uint32)
@@ -474,27 +473,70 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
     fluorophore_thresholds = {channel_settings[channel]["name"]: channel_settings[channel]["threshold"] for channel in channels}
     num_frames = linked_labels.shape[0]
 
-    # --- Threshold each fluorophore channel into positive-blob labels ---
+    # --- Threshold each fluorophore channel into a positive-pixel mask ---
     report(0.05, "Thresholding fluorescence...")
     fluorophore_stacks = {}
-    positive_label_stacks = {}
+    positive_masks = {}
     for channel in channels:
         name = channel_settings[channel]["name"]
         threshold = channel_settings[channel]["threshold"]
         stack = original_image[:, channel].astype(np.float64)
         fluorophore_stacks[name] = stack
         blurred_stack = np.stack([gaussian(frame, sigma=1, preserve_range=True) for frame in stack], axis=0)
-        blob_labels = np.zeros(blurred_stack.shape, dtype=np.uint32)
+        positive_mask = np.zeros(blurred_stack.shape, dtype=bool)
         for frame_index in range(num_frames):
             if isinstance(threshold, str):
                 threshold_value = THRESHOLD_METHODS[threshold.lower()](blurred_stack[frame_index])
             else:
                 threshold_value = float(threshold)
-            blob_labels[frame_index] = label(blurred_stack[frame_index] > threshold_value).astype(np.uint32)
-        positive_label_stacks[name] = blob_labels
+            positive_mask[frame_index] = blurred_stack[frame_index] > threshold_value
+        positive_masks[name] = positive_mask
 
-    report(0.25, "Assigning blobs to cells...")
-    frame_cell_positive_area, positive_cell_labels = compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_names)
+    report(0.25, "Scoring cell positivity...")
+    frame_cell_positive_area, positive_cell_labels = compute_cell_positivity(linked_labels, positive_masks, fluorophore_names)
+
+    # --- 2-D (single-frame) analysis: per-cell intensity/area + % positive per channel; no fate/tracking ---
+    if is_2d:
+        report(0.5, "2-D analysis...")
+        per_cell_df = compute_per_cell_intensity_area(linked_labels, fluorophore_stacks)
+        for name in fluorophore_names:
+            area_lookup = frame_cell_positive_area[name]
+            per_cell_df[f"Thresholded {name} Area (Pixels)"] = [
+                int(area_lookup.get(int(frame), {}).get(int(cell), 0))
+                for frame, cell in zip(per_cell_df["frame"], per_cell_df["cell_id"])
+            ]
+            per_cell_df[f"{name} Positive?"] = np.where(per_cell_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
+            per_cell_df[f"{name} Threshold Method"] = str(fluorophore_thresholds[name])
+
+        rename_map = {"cell_id": "Cell ID", "area_px": "Cell Area (pixels)"}
+        for name in fluorophore_names:
+            rename_map[f"{name}_total_intensity"] = f"{name} Fluorescence (Sum)"
+        per_cell_df = per_cell_df.rename(columns=rename_map)
+        column_order = ["Cell ID", "Cell Area (pixels)"]
+        column_order += [f"{name} Fluorescence (Sum)" for name in fluorophore_names]
+        column_order += [f"Thresholded {name} Area (Pixels)" for name in fluorophore_names]
+        column_order += [f"{name} Positive?" for name in fluorophore_names]
+        column_order += [f"{name} Threshold Method" for name in fluorophore_names]
+        per_cell_df = per_cell_df[column_order]
+        per_cell_df.to_csv(output_directory / "per_cell.csv", index=False)
+
+        total_cells = len(per_cell_df)
+        summary_record = {"filename": file_stem, "n_cells": total_cells}
+        for name in fluorophore_names:
+            summary_record[f"percent_positive_{name}"] = 100.0 * (per_cell_df[f"{name} Positive?"] == "Y").sum() / total_cells if total_cells else 0.0
+        pd.DataFrame([summary_record]).to_csv(output_directory / "summary.csv", index=False)
+
+        figure, axis = plt.subplots(figsize=(6, 4))
+        axis.bar(fluorophore_names, [summary_record[f"percent_positive_{name}"] for name in fluorophore_names], color=[fluorophore_colours[name] for name in fluorophore_names])
+        axis.set(xlabel="Channel", ylabel="% Positive Cells", ylim=(0, 100), title=f"{file_stem} (n={total_cells})")
+        plt.tight_layout()
+        for extension in save_extensions:
+            figure.savefig(str(output_directory / f"percent_positive.{extension}"), bbox_inches="tight")
+        plt.close(figure)
+
+        layer_specs = [{"name": f"{name} positive", "labels": positive_cell_labels[name], "colour": fluorophore_colours[name]} for name in fluorophore_names]
+        report(1.0, "Analysis complete")
+        return {"summary_record": summary_record, "layer_specs": layer_specs, "per_frame_cells": per_cell_df}
 
     layer_specs = []
     mode = analysis_type.value.lower()
@@ -547,9 +589,15 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
                 figure.savefig(str(output_directory / f"dynamic_timelines_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
             plt.close(figure)
 
-        # Only the dynamic positive layers belong in a dynamic run.
-        for name, positive_label_image in positive_cell_labels.items():
-            layer_specs.append({"name": f"dynamic: {name} positive", "labels": positive_label_image, "colour": fluorophore_colours[name]})
+        # One layer per dynamic category so double/triple-positive cells get their own averaged colour.
+        dynamic_categories = sorted(category for category in dynamic_df["category"].unique() if category != "negative")
+        category_colormap = build_category_colormap(dynamic_categories, fluorophore_colours)
+        for category in dynamic_categories:
+            category_labels = np.zeros_like(linked_labels, dtype=np.uint32)
+            category_rows = dynamic_df[dynamic_df["category"] == category]
+            for frame_index, cell_id in zip(category_rows["frame"], category_rows["label_id"]):
+                category_labels[frame_index][linked_labels[frame_index] == cell_id] = cell_id
+            layer_specs.append({"name": f"dynamic: {category} positive", "labels": category_labels, "colour": category_colormap[category]})
 
     # --- Consolidated per-(frame, cell) CSV ---
     report(0.9, "Writing per-cell CSV...")

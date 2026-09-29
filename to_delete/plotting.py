@@ -8,7 +8,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 
-from colours import assign_colours, build_category_colormap
+from to_delete.colours import assign_colours, build_category_colormap
 
 
 def plot_persistent_percentages(summary_dataframe, fluorophore_names, title="Persistent Positive Cells Over Time"):

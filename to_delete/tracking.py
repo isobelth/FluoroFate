@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from utils import configure_java_home
+from to_delete.utils import configure_java_home
 
 LOGGER = logging.getLogger(__name__)
 
