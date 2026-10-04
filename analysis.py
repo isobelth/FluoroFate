@@ -362,6 +362,34 @@ def filter_persistent_by_frame_presence(assignments_dataframe, linked_labels, nu
     return assignments_dataframe[assignments_dataframe["label_id"].isin(keep_label_ids)].copy()
 
 
+def zero_track_positions(tracks_dataframe):
+    """Shift each track's XY so its first point sits at (0, 0)."""
+    if tracks_dataframe is None or len(tracks_dataframe) == 0:
+        return tracks_dataframe
+    zeroed = tracks_dataframe.sort_values("t").copy()
+    first_points = zeroed.groupby("track_id")[["x", "y"]].transform("first")
+    zeroed["x"] = zeroed["x"] - first_points["x"]
+    zeroed["y"] = zeroed["y"] - first_points["y"]
+    return zeroed
+
+
+def zero_cell_frames(category_dataframe):
+    """Shift each cell's frames so its first appearance sits at frame 0."""
+    zeroed = category_dataframe.copy()
+    zeroed["frame"] = zeroed["frame"] - zeroed.groupby("label_id")["frame"].transform("min")
+    return zeroed
+
+
+def persistent_categories_per_frame(per_frame_fates_dataframe, fates_dataframe):
+    """Per-(cell, frame) category for persistent mode: 'negative' until the cell's first positive frame, its fate afterwards."""
+    category_dataframe = per_frame_fates_dataframe[["label_id", "frame"]].copy()
+    first_positive_lookup = fates_dataframe.set_index("label_id")["first_positive_frame"]
+    fate_lookup = fates_dataframe.set_index("label_id")["fate"]
+    lock_frames = category_dataframe["label_id"].map(first_positive_lookup).fillna(np.inf)
+    category_dataframe["category"] = np.where(category_dataframe["frame"] >= lock_frames, category_dataframe["label_id"].map(fate_lookup), "negative")
+    return category_dataframe
+
+
 def plot_persistent_percentages(summary_dataframe, fluorophore_names, fluorophore_colours, title="Persistent Positive Cells Over Time"):
     """Line plot of cumulative percent-positive cells per fluorophore plus a total (persistent mode)."""
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -414,10 +442,15 @@ def plot_dynamic_trajectories(tracks_dataframe, dynamic_dataframe, fluorophore_c
     for label_id, track_group in merged_tracks.groupby("label_id"):
         track_group = track_group.sort_values("frame")
         coordinates = track_group[["x", "y"]].to_numpy(dtype=float)
-        if len(coordinates) < 2:
+        if len(coordinates) == 0:
             continue
         all_x_coordinates.extend(coordinates[:, 0].tolist())
         all_y_coordinates.extend(coordinates[:, 1].tolist())
+        # A dot per timepoint so each measured position is visible, not just the joined line.
+        point_colours = [category_colormap.get(category, (0.6, 0.6, 0.6)) for category in track_group["category"]]
+        ax.scatter(coordinates[:, 0], coordinates[:, 1], s=10, c=point_colours, alpha=0.9, linewidths=0, zorder=3)
+        if len(coordinates) < 2:
+            continue
         segments = np.stack([coordinates[:-1], coordinates[1:]], axis=1)
         segment_colours = [category_colormap.get(category, (0.6, 0.6, 0.6)) for category in track_group["category"].iloc[:-1]]
         ax.add_collection(LineCollection(segments, colors=segment_colours, linewidths=1.5, alpha=0.85))
@@ -518,7 +551,8 @@ def plot_dynamic_cell_timelines(dynamic_dataframe, fluorophore_colours, tracks_d
 
 
 def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2d, analysis_type,
-                 output_directory, file_stem, save_options, frame_presence_threshold, progress_callback=None, tiebreak_order=None):
+                 output_directory, file_stem, save_options, frame_presence_threshold, progress_callback=None, tiebreak_order=None,
+                 plot_options=None):
     """Run the full persistent + dynamic fate analysis for one image.
 
     Parameters
@@ -546,6 +580,11 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         Minimum fraction of frames a cell must be present in to be included in the analysis.
     progress_callback : callable or None
         Called as ``progress_callback(fraction, message)`` (fraction 0-1).
+    plot_options : dict or None
+        ``{"percentages": bool, "timelines": bool, "trajectories": bool,
+        "zero_tracks": bool}`` selecting which figures to draw. ``zero_tracks``
+        replaces real coordinates: timelines start at frame 0 and trajectories
+        at (0, 0). ``None`` draws everything with real frames/positions.
 
     Returns
     -------
@@ -640,6 +679,15 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
 
     label_text = f"cells in \u2265{frame_presence_threshold}% of frames"
 
+    # Which figures to draw; the CSVs are always written.
+    plot_options = plot_options or {}
+    make_percentages = plot_options.get("percentages", True)
+    make_timelines = plot_options.get("timelines", True)
+    make_trajectories = plot_options.get("trajectories", True)
+    zero_tracks_flag = plot_options.get("zero_tracks", False)
+    zero_text = ", zeroed" if zero_tracks_flag else ""
+    zero_suffix = "_zeroed" if zero_tracks_flag else ""
+
     # --- Persistent mode ---
     if mode == "persistent":
         report(0.5, "Persistent fate assignment...")
@@ -656,10 +704,42 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         if len(persistent_filtered) > 0:
             persistent_summary_filtered = compute_persistent_percentages(persistent_filtered, num_frames, fluorophore_names)
             persistent_summary_filtered.to_csv(output_directory / f"percentages_persistent_cells_in_{frame_presence_threshold}_pct_frames.csv", index=False)
-            fig, ax = plot_persistent_percentages(persistent_summary_filtered, fluorophore_names, fluorophore_colours, title=f"{file_stem} — persistent ({label_text}, n={len(persistent_filtered)})")
-            for extension in save_extensions:
-                fig.savefig(str(output_directory / f"percentages_persistent_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
-            plt.close(fig)
+            if make_percentages:
+                fig, ax = plot_persistent_percentages(persistent_summary_filtered, fluorophore_names, fluorophore_colours, title=f"{file_stem} — persistent ({label_text}, n={len(persistent_filtered)})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"percentages_persistent_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+
+            if make_timelines or make_trajectories:
+                # Reuse the dynamic plotting by giving each (cell, frame) a category: gray until lock-in, fate colour after.
+                kept_label_ids = set(persistent_filtered["label_id"])
+                category_df = persistent_categories_per_frame(per_frame_fates_df[per_frame_fates_df["label_id"].isin(kept_label_ids)], persistent_fates_df)
+                tracks_kept = None
+                if tracks_df is not None and len(tracks_df) > 0:
+                    tracks_kept = tracks_df[tracks_df["track_id"].isin({int(label_id) - 1 for label_id in kept_label_ids})].copy()
+
+            if make_trajectories:
+                if zero_tracks_flag:
+                    # Parent-daughter links are misleading once every path starts at the origin.
+                    plot_tracks = zero_track_positions(tracks_kept)
+                    if plot_tracks is not None:
+                        plot_tracks = plot_tracks.drop(columns=["parent_track_id"], errors="ignore")
+                else:
+                    plot_tracks = tracks_kept
+                fig, ax = plot_dynamic_trajectories(plot_tracks, category_df, fluorophore_colours, title=f"{file_stem} — persistent trajectories ({label_text}{zero_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"persistent_trajectories_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+
+            if make_timelines:
+                if zero_tracks_flag:
+                    # Division markers don't line up once every cell starts at frame 0.
+                    fig, ax = plot_dynamic_cell_timelines(zero_cell_frames(category_df), fluorophore_colours, tracks_dataframe=None, title=f"{file_stem} — persistent cell timelines ({label_text}{zero_text})")
+                else:
+                    fig, ax = plot_dynamic_cell_timelines(category_df, fluorophore_colours, tracks_dataframe=tracks_kept, title=f"{file_stem} — persistent cell timelines ({label_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"persistent_timelines_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
 
         # Only the persistent positive layers belong in a persistent run.
         for name, locked_label_image in locked_labels.items():
@@ -676,18 +756,32 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         if len(dynamic_filtered) > 0:
             dynamic_summary_filtered, dynamic_categories_filtered = compute_dynamic_percentages(dynamic_filtered, num_frames)
             dynamic_summary_filtered.to_csv(output_directory / f"percentages_dynamic_cells_in_{frame_presence_threshold}_pct_frames.csv", index=False)
-            fig, ax = plot_dynamic_percentages(dynamic_summary_filtered, dynamic_categories_filtered, fluorophore_colours, title=f"{file_stem} — dynamic ({label_text})")
-            for extension in save_extensions:
-                fig.savefig(str(output_directory / f"percentages_dynamic_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
-            plt.close(fig)
-            fig, ax = plot_dynamic_trajectories(tracks_filtered, dynamic_filtered, fluorophore_colours, title=f"{file_stem} — dynamic trajectories ({label_text})")
-            for extension in save_extensions:
-                fig.savefig(str(output_directory / f"dynamic_trajectories_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
-            plt.close(fig)
-            fig, ax = plot_dynamic_cell_timelines(dynamic_filtered, fluorophore_colours, tracks_dataframe=tracks_filtered, title=f"{file_stem} — cell timelines ({label_text})")
-            for extension in save_extensions:
-                fig.savefig(str(output_directory / f"dynamic_timelines_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
-            plt.close(fig)
+            if make_percentages:
+                fig, ax = plot_dynamic_percentages(dynamic_summary_filtered, dynamic_categories_filtered, fluorophore_colours, title=f"{file_stem} — dynamic ({label_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"percentages_dynamic_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+            if make_trajectories:
+                if zero_tracks_flag:
+                    # Parent-daughter links are misleading once every path starts at the origin.
+                    plot_tracks = zero_track_positions(tracks_filtered)
+                    if plot_tracks is not None:
+                        plot_tracks = plot_tracks.drop(columns=["parent_track_id"], errors="ignore")
+                else:
+                    plot_tracks = tracks_filtered
+                fig, ax = plot_dynamic_trajectories(plot_tracks, dynamic_filtered, fluorophore_colours, title=f"{file_stem} — dynamic trajectories ({label_text}{zero_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"dynamic_trajectories_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+            if make_timelines:
+                if zero_tracks_flag:
+                    # Division markers don't line up once every cell starts at frame 0.
+                    fig, ax = plot_dynamic_cell_timelines(zero_cell_frames(dynamic_filtered), fluorophore_colours, tracks_dataframe=None, title=f"{file_stem} — cell timelines ({label_text}{zero_text})")
+                else:
+                    fig, ax = plot_dynamic_cell_timelines(dynamic_filtered, fluorophore_colours, tracks_dataframe=tracks_filtered, title=f"{file_stem} — cell timelines ({label_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"dynamic_timelines_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
 
         # One layer per dynamic category so double/triple-positive cells get their own averaged colour.
         dynamic_categories = sorted(category for category in dynamic_df["category"].unique() if category != "negative")
