@@ -306,6 +306,42 @@ def assign_dynamic_fates(linked_labels, frame_cell_positive_area):
     return pd.DataFrame(dynamic_rows)
 
 
+def assign_fucci_fates(linked_labels, frame_cell_positive_area, c3_name):
+    """FUCCI/C3* fates: C3* is persistent and overrides the other (dynamic) channels.
+
+    Before a cell's first C3*-positive frame it is categorised like dynamic mode on the
+    non-C3* channels; from that frame onwards it is C3*-positive for the rest of the time-lapse.
+    """
+    fluorophore_names = list(frame_cell_positive_area.keys())
+    other_names = [name for name in fluorophore_names if name != c3_name]
+    num_frames = linked_labels.shape[0]
+
+    # First frame each cell is C3*-positive (absent = never positive).
+    c3_onset = {}
+    for frame_index in range(num_frames):
+        for cell_id, positive_area in frame_cell_positive_area[c3_name][frame_index].items():
+            if positive_area > 0 and cell_id not in c3_onset:
+                c3_onset[cell_id] = frame_index
+
+    fucci_rows = []
+    for frame_index in range(num_frames):
+        cell_shapes = measure_all_cells_in_frame(linked_labels[frame_index])
+        for label_id, (area, roundness) in cell_shapes.items():
+            is_positive = {name: frame_cell_positive_area[name][frame_index].get(label_id, 0) > 0 for name in fluorophore_names}
+            onset = c3_onset.get(label_id)
+            if onset is not None and frame_index >= onset:
+                category = c3_name  # C3* overrides everything once locked in.
+            else:
+                category = "+".join(name for name in other_names if is_positive[name]) or "negative"
+            fucci_row = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
+            fucci_row.update(is_positive)
+            for name in fluorophore_names:
+                fucci_row[f"{name}_positive_area"] = frame_cell_positive_area[name][frame_index].get(label_id, 0)
+            fucci_row["category"] = category
+            fucci_rows.append(fucci_row)
+    return pd.DataFrame(fucci_rows)
+
+
 def compute_persistent_percentages(assignments_dataframe, num_frames, fluorophore_names):
     """Cumulative percent-positive cells per frame (monotonic, persistent mode)."""
     total_cells = len(assignments_dataframe)
@@ -552,7 +588,7 @@ def plot_dynamic_cell_timelines(dynamic_dataframe, fluorophore_colours, tracks_d
 
 def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2d, analysis_type,
                  output_directory, file_stem, save_options, frame_presence_threshold, progress_callback=None, tiebreak_order=None,
-                 plot_options=None):
+                 plot_options=None, fucci_c3_channel=None):
     """Run the full persistent + dynamic fate analysis for one image.
 
     Parameters
@@ -793,6 +829,55 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
                 category_labels[frame_index][linked_labels[frame_index] == cell_id] = cell_id
             layer_specs.append({"name": f"dynamic: {category} positive", "labels": category_labels, "colour": category_colormap[category]})
 
+    # --- FUCCI/C3* mode: C3* persistent, the other channels cycle until C3* locks in ---
+    elif mode == "fucci/c3*":
+        report(0.5, "FUCCI/C3* fate assignment...")
+        c3_name = channel_settings[fucci_c3_channel]["name"] if fucci_c3_channel is not None else fluorophore_names[-1]
+        fucci_df = assign_fucci_fates(linked_labels, frame_cell_positive_area, c3_name).sort_values(["label_id", "frame"]).reset_index(drop=True)
+
+        # Only the frame-presence-filtered variants are saved (cells present in >= N% of frames).
+        report(0.75, "Frame-presence-filtered plots...")
+        tracks_filtered, fucci_filtered = filter_by_frame_presence(tracks_df, fucci_df, num_frames, frame_presence_threshold)
+        if len(fucci_filtered) > 0:
+            fucci_summary_filtered, fucci_categories_filtered = compute_dynamic_percentages(fucci_filtered, num_frames)
+            fucci_summary_filtered.to_csv(output_directory / f"percentages_fucci_cells_in_{frame_presence_threshold}_pct_frames.csv", index=False)
+            if make_percentages:
+                fig, ax = plot_dynamic_percentages(fucci_summary_filtered, fucci_categories_filtered, fluorophore_colours, title=f"{file_stem} \u2014 FUCCI/C3* ({label_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"percentages_fucci_cells_in_{frame_presence_threshold}_pct_frames.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+            if make_trajectories:
+                if zero_tracks_flag:
+                    # Parent-daughter links are misleading once every path starts at the origin.
+                    plot_tracks = zero_track_positions(tracks_filtered)
+                    if plot_tracks is not None:
+                        plot_tracks = plot_tracks.drop(columns=["parent_track_id"], errors="ignore")
+                else:
+                    plot_tracks = tracks_filtered
+                fig, ax = plot_dynamic_trajectories(plot_tracks, fucci_filtered, fluorophore_colours, title=f"{file_stem} \u2014 FUCCI/C3* trajectories ({label_text}{zero_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"fucci_trajectories_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+            if make_timelines:
+                if zero_tracks_flag:
+                    # Division markers don't line up once every cell starts at frame 0.
+                    fig, ax = plot_dynamic_cell_timelines(zero_cell_frames(fucci_filtered), fluorophore_colours, tracks_dataframe=None, title=f"{file_stem} \u2014 FUCCI/C3* timelines ({label_text}{zero_text})")
+                else:
+                    fig, ax = plot_dynamic_cell_timelines(fucci_filtered, fluorophore_colours, tracks_dataframe=tracks_filtered, title=f"{file_stem} \u2014 FUCCI/C3* timelines ({label_text})")
+                for extension in save_extensions:
+                    fig.savefig(str(output_directory / f"fucci_timelines_cells_in_{frame_presence_threshold}_pct_frames{zero_suffix}.{extension}"), bbox_inches="tight")
+                plt.close(fig)
+
+        # One layer per FUCCI category; the C3* category carries the persistent (locked-in) cells.
+        fucci_categories = sorted(category for category in fucci_df["category"].unique() if category != "negative")
+        category_colormap = build_category_colormap(fucci_categories, fluorophore_colours)
+        for category in fucci_categories:
+            category_labels = np.zeros_like(linked_labels, dtype=np.uint32)
+            category_rows = fucci_df[fucci_df["category"] == category]
+            for frame_index, cell_id in zip(category_rows["frame"], category_rows["label_id"]):
+                category_labels[frame_index][linked_labels[frame_index] == cell_id] = cell_id
+            layer_specs.append({"name": f"FUCCI: {category} positive", "labels": category_labels, "colour": category_colormap[category]})
+
     # --- Consolidated per-(frame, cell) CSV ---
     report(0.9, "Writing per-cell CSV...")
     per_frame_cells_df = compute_per_cell_intensity_area(linked_labels, fluorophore_stacks)
@@ -810,7 +895,14 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
             per_frame_cells_df[f"Persistently {name}?"] = np.where(mapped_fate.eq(name), "Y", "N")
         elif mode == "dynamic":
             per_frame_cells_df[f"dynamic {name}?"] = np.where(per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
+        elif mode == "fucci/c3*":
+            per_frame_cells_df[f"FUCCI {name}?"] = np.where(per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
         per_frame_cells_df[f"{name} Threshold Method"] = str(fluorophore_thresholds[name])
+
+    if mode == "fucci/c3*":
+        # Per-(cell, frame) FUCCI category, with the C3* override already applied.
+        fucci_category_lookup = fucci_df.set_index(["label_id", "frame"])["category"].to_dict()
+        per_frame_cells_df["FUCCI Category"] = [fucci_category_lookup.get((int(cell), int(frame)), "negative") for frame, cell in zip(per_frame_cells_df["frame"], per_frame_cells_df["cell_id"])]
 
     # Lineage columns come from the tracks table (track_id == cell_id - 1).
     lineage_columns = ["track_id", "lineage_id", "parent_track_id", "generation"]
@@ -839,6 +931,9 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         column_order += [f"Persistently {name}?" for name in fluorophore_names]
     elif mode == "dynamic":
         column_order += [f"dynamic {name}?" for name in fluorophore_names]
+    elif mode == "fucci/c3*":
+        column_order += [f"FUCCI {name}?" for name in fluorophore_names]
+        column_order += ["FUCCI Category"]
     per_frame_cells_df = per_frame_cells_df[column_order]
     per_frame_cells_df.to_csv(output_directory / "per_frame_cells.csv", index=False)
 
@@ -860,6 +955,11 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         last_frame_total = max(len(last_frame_dynamic), 1)
         for category in sorted(dynamic_df["category"].unique()):
             summary_record[f"dynamic_final_pct_{category}"] = 100.0 * (last_frame_dynamic["category"] == category).sum() / last_frame_total
+    elif mode == "fucci/c3*":
+        last_frame_fucci = fucci_df[fucci_df["frame"] == num_frames - 1]
+        last_frame_total = max(len(last_frame_fucci), 1)
+        for category in sorted(fucci_df["category"].unique()):
+            summary_record[f"fucci_final_pct_{category}"] = 100.0 * (last_frame_fucci["category"] == category).sum() / last_frame_total
 
     report(1.0, "Analysis complete")
     return {"summary_record": summary_record, "layer_specs": layer_specs, "per_frame_cells": per_frame_cells_df}
