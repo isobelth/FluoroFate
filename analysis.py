@@ -899,7 +899,11 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
             per_frame_cells_df[f"FUCCI {name}?"] = np.where(per_frame_cells_df[f"Thresholded {name} Area (Pixels)"] > 0, "Y", "N")
         per_frame_cells_df[f"{name} Threshold Method"] = str(fluorophore_thresholds[name])
 
-    if mode == "fucci/c3*":
+    if mode == "dynamic":
+        # Per-(cell, frame) dynamic category, e.g. "GFP+mCherry" or "negative".
+        dynamic_category_lookup = dynamic_df.set_index(["label_id", "frame"])["category"].to_dict()
+        per_frame_cells_df["Dynamic Category"] = [dynamic_category_lookup.get((int(cell), int(frame)), "negative") for frame, cell in zip(per_frame_cells_df["frame"], per_frame_cells_df["cell_id"])]
+    elif mode == "fucci/c3*":
         # Per-(cell, frame) FUCCI category, with the C3* override already applied.
         fucci_category_lookup = fucci_df.set_index(["label_id", "frame"])["category"].to_dict()
         per_frame_cells_df["FUCCI Category"] = [fucci_category_lookup.get((int(cell), int(frame)), "negative") for frame, cell in zip(per_frame_cells_df["frame"], per_frame_cells_df["cell_id"])]
@@ -931,6 +935,7 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         column_order += [f"Persistently {name}?" for name in fluorophore_names]
     elif mode == "dynamic":
         column_order += [f"dynamic {name}?" for name in fluorophore_names]
+        column_order += ["Dynamic Category"]
     elif mode == "fucci/c3*":
         column_order += [f"FUCCI {name}?" for name in fluorophore_names]
         column_order += ["FUCCI Category"]
