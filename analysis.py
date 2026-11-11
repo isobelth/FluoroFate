@@ -311,6 +311,8 @@ def assign_fucci_fates(linked_labels, frame_cell_positive_area, c3_name):
 
     Before a cell's first C3*-positive frame it is categorised like dynamic mode on the
     non-C3* channels; from that frame onwards it is C3*-positive for the rest of the time-lapse.
+    c3_onset_state records each cell's cell-cycle state (non-C3* channels) in that first
+    C3*-positive frame, or NaN if the cell never becomes C3*-positive.
     """
     fluorophore_names = list(frame_cell_positive_area.keys())
     other_names = [name for name in fluorophore_names if name != c3_name]
@@ -324,22 +326,29 @@ def assign_fucci_fates(linked_labels, frame_cell_positive_area, c3_name):
                 c3_onset[cell_id] = frame_index
 
     fucci_rows = []
+    c3_onset_state = {}
     for frame_index in range(num_frames):
         cell_shapes = measure_all_cells_in_frame(linked_labels[frame_index])
         for label_id, (area, roundness) in cell_shapes.items():
             is_positive = {name: frame_cell_positive_area[name][frame_index].get(label_id, 0) > 0 for name in fluorophore_names}
+            cell_cycle_state = "+".join(name for name in other_names if is_positive[name]) or "negative"
             onset = c3_onset.get(label_id)
+            if onset is not None and frame_index == onset:
+                c3_onset_state[label_id] = cell_cycle_state  # What the cell-cycle reporters show when C3* first comes on.
             if onset is not None and frame_index >= onset:
                 category = c3_name  # C3* overrides everything once locked in.
             else:
-                category = "+".join(name for name in other_names if is_positive[name]) or "negative"
+                category = cell_cycle_state
             fucci_row = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
             fucci_row.update(is_positive)
             for name in fluorophore_names:
                 fucci_row[f"{name}_positive_area"] = frame_cell_positive_area[name][frame_index].get(label_id, 0)
             fucci_row["category"] = category
             fucci_rows.append(fucci_row)
-    return pd.DataFrame(fucci_rows)
+    fucci_dataframe = pd.DataFrame(fucci_rows)
+    if len(fucci_dataframe) > 0:
+        fucci_dataframe["c3_onset_state"] = fucci_dataframe["label_id"].map(c3_onset_state)
+    return fucci_dataframe
 
 
 def compute_persistent_percentages(assignments_dataframe, num_frames, fluorophore_names):
@@ -907,6 +916,9 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         # Per-(cell, frame) FUCCI category, with the C3* override already applied.
         fucci_category_lookup = fucci_df.set_index(["label_id", "frame"])["category"].to_dict()
         per_frame_cells_df["FUCCI Category"] = [fucci_category_lookup.get((int(cell), int(frame)), "negative") for frame, cell in zip(per_frame_cells_df["frame"], per_frame_cells_df["cell_id"])]
+        # Each cell's cell-cycle state when its C3* reporter first came on, repeated on every row of that cell (blank if it never did).
+        onset_state_by_cell = fucci_df.drop_duplicates("label_id").set_index("label_id")["c3_onset_state"]
+        per_frame_cells_df[f"Cell-Cycle State at {c3_name} Onset"] = per_frame_cells_df["cell_id"].map(onset_state_by_cell)
 
     # Lineage columns come from the tracks table (track_id == cell_id - 1).
     lineage_columns = ["track_id", "lineage_id", "parent_track_id", "generation"]
@@ -938,7 +950,7 @@ def run_analysis(original_image, linked_labels, tracks_df, channel_settings,is_2
         column_order += ["Dynamic Category"]
     elif mode == "fucci/c3*":
         column_order += [f"FUCCI {name}?" for name in fluorophore_names]
-        column_order += ["FUCCI Category"]
+        column_order += ["FUCCI Category", f"Cell-Cycle State at {c3_name} Onset"]
     per_frame_cells_df = per_frame_cells_df[column_order]
     per_frame_cells_df.to_csv(output_directory / "per_frame_cells.csv", index=False)
 

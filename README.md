@@ -273,7 +273,7 @@ This mode is appropriate for analyses in which cell states change dynamically ov
 
 ### FUCCI/C3\* Mode
 
-FUCCI/C3\* mode combines the two: it is designed for FUCCI cell-cycle reporters used together with a third, irreversible reporter (C3\*, e.g. a caspase-3 activity reporter). Until a cell becomes positive for the C3\* channel, it is classified at each frame like dynamic mode, using the remaining channels (e.g. `hCDT1`, `hGMNN`, `hCDT1+hGMNN`, `negative`). From the first frame it is C3\*-positive onwards, its category is the C3\* channel's name (e.g. `Cerulean`) for the rest of the timelapse, whatever the other channels show. This mode is offered when at least three fluorescence channels are analysed.
+FUCCI/C3\* mode combines the two: it is designed for FUCCI cell-cycle reporters used together with a third, irreversible reporter (C3\*, e.g. a caspase-3 activity reporter). Until a cell becomes positive for the C3\* channel, it is classified at each frame like dynamic mode, using the remaining channels (e.g. `hCDT1`, `hGMNN`, `hCDT1+hGMNN`, `negative`). From the first frame it is C3\*-positive onwards, its category is the C3\* channel's name (e.g. `Cerulean`) for the rest of the timelapse, whatever the other channels show. FluoroFate also records each cell's cell-cycle state in the frame its C3\* reporter first comes on (e.g. `hGMNN`), so you can ask whether a treatment kills cells preferentially at particular stages of the cell cycle. This mode is offered when at least three fluorescence channels are analysed.
 
 ### Frame-Presence Filter
 
@@ -330,7 +330,7 @@ Columns (in order):
 - then, depending on the analysis mode:
   - **Persistent:** `Persistently {Fluorophore}?` — `Y`/`N`, constant per cell (the cell's assigned persistent fate, repeated on every row of that cell). A cell can be persistently `Y` for at most one fluorophore.
   - **Dynamic:** `dynamic {Fluorophore}?` — `Y`/`N`, per frame; `Y` iff `Thresholded {Fluorophore} Area (Pixels) > 0` — followed by `Dynamic Category` (e.g. `Green+Red`)
-  - **FUCCI/C3\*:** `FUCCI {Fluorophore}?` — `Y`/`N`, per frame (raw positivity) — followed by `FUCCI Category` (with the C3\* lock-in applied)
+  - **FUCCI/C3\*:** `FUCCI {Fluorophore}?` — `Y`/`N`, per frame (raw positivity) — followed by `FUCCI Category` (with the C3\* lock-in applied) and `Cell-Cycle State at {C3*} Onset` — the cell-cycle category (from the non-C3\* channels, e.g. `hCDT1`, `hCDT1+hGMNN` or `negative`) in the frame the cell first became C3\*-positive, repeated on every row of that cell; blank if it never became C3\*-positive. For a cell that is already C3\*-positive when it is first tracked, this is its state in that first frame.
 
 Fluorophore columns are grouped by type (all Fluorescence columns, then all Thresholded columns, …), in channel order.
 
